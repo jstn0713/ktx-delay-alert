@@ -25,25 +25,26 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v4
 
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
       - name: 서명 키 준비
         env:
-          KEYSTORE_BASE64: ${{ secrets.KEYSTORE_BASE64 }}
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
+          SIGNING_SEED: ${{ secrets.SIGNING_SEED }}
         run: |
-          if [ -n "$KEYSTORE_BASE64" ] && [ -n "$KEYSTORE_PASSWORD" ]; then
-            echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/release.jks"
-            echo "KEYSTORE_FILE=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+          if [ -n "$SIGNING_SEED" ]; then
+            pip install --quiet pycryptodome==3.21.0 cryptography==44.0.0
+            python .github/scripts/make_keystore.py "$RUNNER_TEMP/release.p12"
             echo "HAS_SIGNING_KEY=true" >> "$GITHUB_ENV"
           else
-            echo "::warning::서명 키 Secret(KEYSTORE_BASE64, KEYSTORE_PASSWORD)이 없어 임시 키로 빌드만 합니다. 다운로드 페이지(릴리스)에는 올리지 않습니다."
+            echo "::warning::SIGNING_SEED Secret이 없어 임시 키로 빌드만 합니다. 다운로드 페이지(릴리스)에는 올리지 않습니다."
           fi
 
       - name: 테스트
         run: ./gradlew --no-daemon testDebugUnitTest
 
       - name: APK 빌드
-        env:
-          KEYSTORE_PASSWORD: ${{ secrets.KEYSTORE_PASSWORD }}
         run: ./gradlew --no-daemon assembleRelease -PversionCode=${{ github.run_number }}
 
       - name: 파일 이름 정리

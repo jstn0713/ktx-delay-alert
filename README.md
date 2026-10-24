@@ -95,9 +95,10 @@
 - 안드로이드 네이티브 앱 (Kotlin, Jetpack Compose). 최소 Android 8.0, 대상 SDK 35
 - `main` 브랜치에 올라가면 GitHub Actions가 테스트 → APK 빌드 → **Releases**에 자동 게시합니다.
 - 버전 번호는 `1.0.<빌드 번호>`입니다.
-- 서명 키는 저장소 Secret에만 있습니다: **`KEYSTORE_BASE64`**(키 파일을 base64로), **`KEYSTORE_PASSWORD`**(별칭 `ktxdelay`).
+- 서명 키는 어디에도 저장하지 않습니다. 저장소 Secret **`SIGNING_SEED`**(24자 이상 비밀 문구)로부터
+  `.github/scripts/make_keystore.py`가 빌드 때마다 **항상 같은 키**를 만들어 서명합니다.
   Secret이 없으면 임시 키로 빌드만 하고 Releases에는 올리지 않습니다.
-  (서명 키가 바뀌면 기존 앱 위에 업데이트 설치가 안 되므로 Secret을 바꾸지 마세요.)
+  **`SIGNING_SEED`를 바꾸거나 지우면 기존 앱 위에 업데이트 설치가 안 되니 절대 바꾸지 마세요.**
 - 코드 구성
   - `core/` — 코레일 조회·응답 해석(`Korail.kt`), 감시 일정·알림 판단(`Monitor.kt`), 통계, 저장 형식. 안드로이드와 무관한 순수 Kotlin이고 단위 테스트가 있습니다.
   - `service/` — 출발 전 감시하는 포그라운드 서비스, 정확한 알람 예약, 알림 표시

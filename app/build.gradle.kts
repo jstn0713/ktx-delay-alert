@@ -6,7 +6,7 @@ plugins {
 
 // GitHub Actions 가 빌드 번호를 넘겨준다 (없으면 1)
 val ciVersionCode = (project.findProperty("versionCode") as String?)?.toIntOrNull() ?: 1
-// 서명 키는 GitHub Secrets 에만 있다 (워크플로가 KEYSTORE_FILE 로 풀어 줌). 없으면 임시(debug) 키로 서명.
+// 서명 키는 워크플로가 Secret SIGNING_SEED 로 만들어 KEYSTORE_FILE 로 넘겨 준다. 없으면 임시(debug) 키로 서명.
 val keystoreFile: String? = System.getenv("KEYSTORE_FILE")?.takeIf { it.isNotBlank() }
 
 android {
@@ -26,6 +26,7 @@ android {
         if (keystoreFile != null) {
             create("release") {
                 storeFile = file(keystoreFile)
+                storeType = "pkcs12"
                 storePassword = System.getenv("KEYSTORE_PASSWORD")
                 keyAlias = "ktxdelay"
                 keyPassword = System.getenv("KEYSTORE_PASSWORD")
