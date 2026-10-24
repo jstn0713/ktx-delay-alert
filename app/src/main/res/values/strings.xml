@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">KTX 지연 알림</string>
+    <string name="widget_label">KTX 지연</string>
+    <string name="widget_description">감시 중인 열차의 지연 시간과 다음 확인 일정을 보여줘요</string>
+</resources>
