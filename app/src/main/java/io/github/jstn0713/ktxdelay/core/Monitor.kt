@@ -22,6 +22,23 @@ data class PollOutcome(
     val finished: List<TrainStatus>,
 )
 
+/** 조회 결과를 내 구간(타는 역/내리는 역)에 맞게 추린 값 */
+data class Reading(
+    val found: Boolean,
+    val cancelled: Boolean = false,
+    val trainName: String = "",
+    /** 타는 역 지연(분) */
+    val departDelayMin: Int = 0,
+    /** 내리는 역 도착 지연(분) */
+    val arrDelayMin: Int? = null,
+    val schedDep: LocalTime? = null,
+    val schedArr: LocalTime? = null,
+    /** 조회는 됐지만 이 번호의 열차가 없음 */
+    val notFound: Boolean = false,
+    /** 네트워크·형식 오류 */
+    val error: String? = null,
+)
+
 /** 어떤 열차를 언제 감시할지, 조회 결과로 상태를 어떻게 바꿀지 정하는 순수 로직. */
 object Monitor {
     /** 출발 예정 시각에서 이만큼 지나면 무조건 감시 종료 */
@@ -97,81 +114,49 @@ object Monitor {
         return Duration.ofMinutes(min.coerceAtLeast(1).toLong())
     }
 
-    /**
-     * 같은 구간·날짜의 열차들을 한 번(또는 몇 번)의 조회로 찾는다.
-     * 기본 조회에서 못 찾으면 "수서 함께 보기" 방식으로 한 번 더 조회한다.
-     */
-    fun searchGroup(
-        dep: String,
-        arr: String,
-        date: LocalDate,
-        occs: List<Occurrence>,
-        searcher: Searcher,
-    ): Pair<Map<String, KorailTrain>, String?> {
-        val found = mutableMapOf<String, KorailTrain>()
-        var error: String? = null
-        var anySuccess = false
-        for (includeSuseo in listOf(false, true)) {
-            var remaining = occs.filter { it.key !in found }.sortedBy { it.scheduledDep }
-            if (remaining.isEmpty()) break
-            var from = searchFrom(remaining.first().train.depTime)
-            var pages = 0
-            while (remaining.isNotEmpty() && pages < 3) {
-                pages++
-                when (val res = searcher.search(dep, arr, date, from, includeSuseo)) {
-                    is SearchResult.Failure -> {
-                        error = res.message
-                        remaining = emptyList()
-                    }
-                    is SearchResult.Success -> {
-                        anySuccess = true
-                        for (o in remaining) matchTrain(o, res.trains)?.let { found[o.key] = it }
-                        remaining = remaining.filter { it.key !in found }
-                        val lastDep = res.trains.mapNotNull { it.depLocalTime }.maxOrNull()
-                        val beyond = remaining.filter { lastDep != null && it.train.depTime > lastDep }
-                        if (beyond.isEmpty()) {
-                            remaining = emptyList()
-                        } else {
-                            remaining = beyond
-                            from = searchFrom(beyond.first().train.depTime)
-                        }
-                    }
-                }
+    /** 조회 결과를 내 구간에 맞게 해석한다. */
+    fun readingFrom(result: LookupResult, dep: String, arr: String): Reading = when (result) {
+        is LookupResult.Failure -> Reading(found = false, error = result.message)
+        is LookupResult.NotFound -> Reading(found = false, notFound = true)
+        is LookupResult.Success -> {
+            val t = result.train
+            val depStop = t.stopFor(dep)
+            if (depStop == null) {
+                // 이 번호의 열차가 그 역에 안 섬 → 번호가 틀렸거나 다른 열차
+                Reading(found = false, notFound = true)
+            } else {
+                val arrStop = t.stopFor(arr)
+                Reading(
+                    found = true,
+                    cancelled = t.cancelled,
+                    trainName = t.label,
+                    departDelayMin = depStop.delayMin,
+                    arrDelayMin = arrStop?.delayMin,
+                    schedDep = depStop.schedDep,
+                    schedArr = arrStop?.schedArr,
+                )
             }
-            if (error != null && !anySuccess) break
         }
-        return found to (if (anySuccess) null else error)
-    }
-
-    private fun searchFrom(t: LocalTime): LocalTime =
-        if (t.hour == 0 && t.minute == 0) t else t.minusMinutes(1)
-
-    fun matchTrain(occ: Occurrence, results: List<KorailTrain>): KorailTrain? {
-        val date = occ.date.toString().replace("-", "")
-        val sameDay = results.filter { it.depDate.isBlank() || it.depDate == date }
-        val wantNo = occ.train.trainNo.trimStart('0')
-        if (wantNo.isNotEmpty()) {
-            sameDay.firstOrNull { it.trainNo == wantNo }?.let { return it }
-        }
-        return sameDay.firstOrNull { it.depLocalTime == occ.train.depTime }
     }
 
     /** 조회 결과 하나를 상태에 반영하고, 필요하면 소리 알림 이벤트를 만든다. */
     fun apply(
         prev: TrainStatus,
-        train: KorailTrain?,
-        error: String?,
+        reading: Reading,
         now: LocalDateTime,
         settings: AppSettings,
     ): Pair<TrainStatus, AlertEvent?> {
-        if (train == null) {
+        if (reading.error != null) {
+            val next = prev.copy(
+                lastCheckedAt = now,
+                phase = if (prev.lastDataAt == null) Phase.ERROR else prev.phase,
+                message = if (prev.lastDataAt == null) "조회 실패: ${reading.error}"
+                else "조회 실패 — ${prev.lastDataAt.hm()} 정보 기준",
+            )
+            return next to null
+        }
+        if (!reading.found) {
             val next = when {
-                error != null -> prev.copy(
-                    lastCheckedAt = now,
-                    phase = if (prev.lastDataAt == null) Phase.ERROR else prev.phase,
-                    message = if (prev.lastDataAt == null) "조회 실패: $error"
-                    else "조회 실패 — ${prev.lastDataAt.hm()} 정보 기준 ($error)",
-                )
                 prev.lastDataAt != null && !now.isBefore(prev.scheduledDep) -> prev.copy(
                     lastCheckedAt = now,
                     message = "예정 시각이 지나 조회에서 빠졌어요 — ${prev.lastDataAt.hm()} 정보 기준",
@@ -179,22 +164,26 @@ object Monitor {
                 else -> prev.copy(
                     lastCheckedAt = now,
                     phase = if (prev.lastDataAt == null) Phase.NOT_FOUND else prev.phase,
-                    message = if (prev.lastDataAt == null) "조회 결과에 이 열차가 없어요 (역 이름·시각·번호 확인)"
+                    message = if (prev.lastDataAt == null) "이 번호의 열차가 조회되지 않아요 (번호·날짜·역 확인)"
                     else "이번 조회에서 열차가 빠졌어요 — ${prev.lastDataAt.hm()} 정보 기준",
                 )
             }
             return next to null
         }
 
-        val delay = train.delayMin.coerceAtLeast(0)
+        val delay = reading.departDelayMin.coerceAtLeast(0)
         val timeline = if (prev.timeline.lastOrNull()?.delay == delay) prev.timeline
         else prev.timeline + TimelinePoint(now, delay)
+        val schedArr = reading.schedArr?.let { t ->
+            val d = prev.scheduledDep.toLocalDate()
+            LocalDateTime.of(if (t < prev.scheduledDep.toLocalTime()) d.plusDays(1) else d, t)
+        } ?: prev.scheduledArr
         var next = prev.copy(
-            label = train.label.ifBlank { prev.label },
-            scheduledArr = train.arrDateTime() ?: prev.scheduledArr,
+            label = reading.trainName.ifBlank { prev.label },
+            scheduledArr = schedArr,
             delayMin = delay,
-            delayRaw = train.delayRaw,
-            phase = if (train.cancelled) Phase.CANCELLED else Phase.RUNNING,
+            arrDelayMin = reading.arrDelayMin,
+            phase = if (reading.cancelled) Phase.CANCELLED else Phase.RUNNING,
             lastCheckedAt = now,
             lastDataAt = now,
             firstDelayAt = prev.firstDelayAt ?: if (delay > 0) now else null,
@@ -204,7 +193,7 @@ object Monitor {
         )
 
         var alert: AlertEvent? = null
-        if (train.cancelled) {
+        if (reading.cancelled) {
             if (prev.phase != Phase.CANCELLED) alert = AlertEvent.Cancelled(next)
         } else {
             val last = prev.lastAlertedDelay
@@ -222,29 +211,30 @@ object Monitor {
         return next to alert
     }
 
-    /** 한 번의 확인: 조회 → 상태 갱신 → 알림 판단 → 끝난 열차 분리. */
+    /** 한 번의 확인: 열차별 조회 → 상태 갱신 → 알림 판단 → 끝난 열차 분리. */
     fun poll(
         now: LocalDateTime,
         active: List<Occurrence>,
         prev: Map<String, TrainStatus>,
         settings: AppSettings,
-        searcher: Searcher,
+        source: TrainSource,
     ): PollOutcome {
         val updated = mutableListOf<TrainStatus>()
         val alerts = mutableListOf<AlertEvent>()
-        val groups = active.groupBy { Triple(it.train.depStation, it.train.arrStation, it.date) }
-        for ((g, occs) in groups) {
-            val (found, error) = searchGroup(g.first, g.second, g.third, occs, searcher)
-            for (occ in occs) {
-                val base = prev[occ.key] ?: TrainStatus.start(occ, now)
-                val (s, alert) = apply(base, found[occ.key], error, now, settings)
-                updated += s
-                if (alert != null) alerts += alert
+        for (occ in active) {
+            val base = prev[occ.key] ?: TrainStatus.start(occ, now)
+            val result = try {
+                source.lookup(occ.train.trainNo, occ.train.railwayCompany, occ.date)
+            } catch (e: Exception) {
+                LookupResult.Failure("조회 중 오류: ${e.message ?: e.javaClass.simpleName}")
             }
+            val reading = readingFrom(result, occ.train.depStation, occ.train.arrStation)
+            val (s, alert) = apply(base, reading, now, settings)
+            updated += s
+            if (alert != null) alerts += alert
         }
         val (finished, still) = updated.partition { isFinished(it, now, settings) }
         // 이번에 조회하지 않았지만 시간이 지나 끝난 열차도 기록으로 넘긴다.
-        // (삭제했거나 "오늘은 끄기"한 열차는 끝나지 않은 채 사라지므로 기록하지 않는다)
         val activeKeys = active.map { it.key }.toSet()
         val expired = prev.values.filter { it.key !in activeKeys && isFinished(it, now, settings) }
         return PollOutcome(still.sortedBy { it.scheduledDep }, alerts, finished + expired)
@@ -273,7 +263,7 @@ object Texts {
     /** 예: "수서 21:00 → 21:07 도착 예상" */
     fun arrLine(s: TrainStatus): String {
         val arr = s.scheduledArr ?: return "${s.arrStation} 도착"
-        val d = s.delayMin ?: 0
+        val d = s.arrDelayMin ?: s.delayMin ?: 0
         return if (s.phase == Phase.RUNNING && d > 0) "${s.arrStation} ${arr.hm()} → ${s.expectedArr?.hm()} 도착 예상"
         else "${s.arrStation} ${arr.hm()} 도착"
     }

@@ -17,206 +17,129 @@ class MonitorTest {
     private val wed = LocalDate.of(2026, 10, 28)
     private val sun = LocalDate.of(2026, 10, 25)
 
-    private fun watch(id: String, day: Int, time: String, no: String = "") = WatchTrain(
+    private fun watch(id: String, day: Int, time: String, no: String) = WatchTrain(
         id = id, days = setOf(day), depStation = "천안아산", arrStation = "수서",
         depTime = LocalTime.parse(time), trainNo = no,
     )
 
     private val trains = listOf(
         watch("sun324", 7, "12:49", "324"),
-        watch("wed1945", 3, "19:45"),
-        watch("wed1954", 3, "19:54"),
-        watch("wed352", 3, "20:12", "352"),
+        watch("wed1945", 3, "19:45", "350"),
+        watch("wed1954", 3, "19:54", "352"),
+        watch("wed2012", 3, "20:12", "614"),
         watch("thu346", 4, "18:05", "346"),
     )
 
-    private fun kt(no: String, dep: String, delay: Int, arr: String = "2100", cancelled: Boolean = false) = KorailTrain(
-        trainNo = no, trainName = "KTX-산천", depStation = "천안아산", arrStation = "수서",
-        depDate = "20261028", depTime = dep + "00", arrDate = "20261028", arrTime = arr + "00",
-        delayRaw = "%04d".format(delay), delayMin = delay, cancelled = cancelled, raw = emptyMap(),
-    )
+    /** 천안아산→수서 열차 하나를 만든다. */
+    private fun train(no: String, depDelay: Int, arrDelay: Int = depDelay, cancelled: Boolean = false): NaverTrain {
+        val stops = listOf(
+            NaverStop("0041", "목포", LocalTime.of(10, 0), null, 0, 1),
+            NaverStop("0502", "천안아산", LocalTime.of(20, 12), LocalTime.of(20, 10), depDelay, 6),
+            NaverStop("0551", "수서", null, LocalTime.of(21, 0), arrDelay, 8),
+        )
+        return NaverTrain(no.padStart(5, '0'), no, "KTX-산천", "KORAIL", "r", "목포", "수서", stops, cancelled, "{}")
+    }
 
-    /** 조회 시각에 따라 다른 결과를 돌려주는 가짜 코레일 */
-    private class FakeKorail(var trains: List<KorailTrain>, val pageSize: Int = 10) : Searcher {
-        val calls = mutableListOf<Pair<LocalTime, Boolean>>()
-        override fun search(dep: String, arr: String, date: LocalDate, from: LocalTime, includeSuseo: Boolean): SearchResult {
-            calls += from to includeSuseo
-            val list = trains.filter { it.depLocalTime!! >= from }.sortedBy { it.depLocalTime }.take(pageSize)
-            return SearchResult.Success(list, "{}")
+    /** 번호별로 응답을 바꿔 돌려주는 가짜 네이버 */
+    private class FakeSource : TrainSource {
+        var byNo: (String) -> LookupResult = { LookupResult.NotFound() }
+        val calls = mutableListOf<String>()
+        override fun lookup(trainNo: String, company: String, date: LocalDate): LookupResult {
+            calls += trainNo
+            return byNo(padTrainNo(trainNo))
         }
     }
+
+    // ---- 일정 (데이터 소스와 무관) ----
 
     @Test
     fun nothingActiveBeforeWindow() {
         val now = dt(wed, 18, 44)
-        val active = Monitor.activeOccurrences(now, trains, settings, null, emptySet(), emptyMap())
-        assertTrue(active.isEmpty())
+        assertTrue(Monitor.activeOccurrences(now, trains, settings, null, emptySet(), emptyMap()).isEmpty())
         assertEquals(dt(wed, 18, 45), Monitor.nextStart(now, trains, settings, null, emptySet(), emptyMap()))
     }
 
     @Test
     fun wednesdayWindowsOverlap() {
-        val at = { h: Int, m: Int -> Monitor.activeOccurrences(dt(wed, h, m), trains, settings, null, emptySet(), emptyMap()).map { it.train.id } }
+        val at = { h: Int, m: Int ->
+            Monitor.activeOccurrences(dt(wed, h, m), trains, settings, null, emptySet(), emptyMap()).map { it.train.id }
+        }
         assertEquals(listOf("wed1945"), at(18, 45))
         assertEquals(listOf("wed1945", "wed1954"), at(18, 54))
-        assertEquals(listOf("wed1945", "wed1954", "wed352"), at(19, 12))
-        // 상태가 없으면 출발 5분 뒤까지만 감시
-        assertEquals(listOf("wed1954", "wed352"), at(19, 50))
+        assertEquals(listOf("wed1945", "wed1954", "wed2012"), at(19, 12))
+        assertEquals(listOf("wed1954", "wed2012"), at(19, 50))
     }
 
     @Test
     fun skipTodayAndNextStart() {
         val now = dt(wed, 19, 0)
         assertTrue(Monitor.activeOccurrences(now, trains, settings, wed, emptySet(), emptyMap()).isEmpty())
-        // 다음은 목요일 18:05 열차 → 17:05 시작
-        assertEquals(
-            dt(wed.plusDays(1), 17, 5),
-            Monitor.nextStart(now, trains, settings, wed, emptySet(), emptyMap()),
-        )
+        assertEquals(dt(wed.plusDays(1), 17, 5), Monitor.nextStart(now, trains, settings, wed, emptySet(), emptyMap()))
     }
 
     @Test
     fun nextStartWrapsWeek() {
-        val now = dt(sun, 14, 0) // 일요일 열차 지난 뒤
-        val next = Monitor.nextOccurrence(now, trains, settings, null)!!
+        val next = Monitor.nextOccurrence(dt(sun, 14, 0), trains, settings, null)!!
         assertEquals("wed1945", next.train.id)
-        assertEquals(LocalDate.of(2026, 10, 28), next.date)
     }
 
     @Test
     fun disabledTrainIgnored() {
         val t = trains.map { if (it.id == "sun324") it.copy(enabled = false) else it }
-        val active = Monitor.activeOccurrences(dt(sun, 12, 0), t, settings, null, emptySet(), emptyMap())
-        assertTrue(active.isEmpty())
+        assertTrue(Monitor.activeOccurrences(dt(sun, 12, 0), t, settings, null, emptySet(), emptyMap()).isEmpty())
     }
 
     @Test
     fun pollIntervalSpeedsUpNearDeparture() {
-        val occ = Occurrence(trains[3], wed)
-        val s = TrainStatus.start(occ, dt(wed, 19, 12))
+        val s = TrainStatus.start(Occurrence(trains[3], wed), dt(wed, 19, 12))
         assertEquals(2L, Monitor.pollInterval(listOf(s), dt(wed, 19, 30), settings).toMinutes())
         assertEquals(1L, Monitor.pollInterval(listOf(s), dt(wed, 19, 42), settings).toMinutes())
     }
 
+    // ---- apply() ----
+
+    private fun start(id: String, date: LocalDate, now: LocalDateTime): TrainStatus =
+        TrainStatus.start(Occurrence(trains.first { it.id == id }, date), now)
+
+    private fun found(depDelay: Int, arrDelay: Int = depDelay, cancelled: Boolean = false) =
+        Monitor.readingFrom(LookupResult.Success(train("614", depDelay, arrDelay, cancelled)), "천안아산", "수서")
+
     @Test
-    fun matchesByNumberThenTime() {
-        val results = listOf(kt("350", "1945", 0), kt("1234", "1954", 0), kt("352", "2012", 3))
-        assertEquals("352", Monitor.matchTrain(Occurrence(trains[3], wed), results)!!.trainNo)
-        assertEquals("350", Monitor.matchTrain(Occurrence(trains[1], wed), results)!!.trainNo)
-        // 번호가 틀렸어도 시각이 맞으면 찾는다
-        val wrongNo = trains[3].copy(trainNo = "999")
-        assertEquals("352", Monitor.matchTrain(Occurrence(wrongNo, wed), results)!!.trainNo)
-        // 다른 날짜 결과는 무시
-        val other = results.map { it.copy(depDate = "20261029") }
-        assertNull(Monitor.matchTrain(Occurrence(trains[3], wed), other))
+    fun firstDelayAlertsAndFillsArrival() {
+        val now = dt(wed, 19, 20)
+        val (s, a) = Monitor.apply(start("wed2012", wed, now), found(4), now, settings)
+        assertTrue(a is AlertEvent.FirstDelay && a.delay == 4)
+        assertEquals(4, s.delayMin)
+        assertEquals(4, s.arrDelayMin)
+        assertEquals(dt(wed, 21, 0), s.scheduledArr)
+        assertEquals("천안아산 20:12 → 20:16 출발", Texts.depLine(s))
+        assertEquals("수서 21:00 → 21:04 도착 예상", Texts.arrLine(s))
     }
 
     @Test
-    fun fullWednesdayScenario() {
-        val korail = FakeKorail(listOf(kt("350", "1945", 0), kt("1234", "1954", 0), kt("352", "2012", 0)))
-        var statuses = emptyMap<String, TrainStatus>()
-        val finished = mutableListOf<TrainStatus>()
-        val alerts = mutableListOf<AlertEvent>()
-        val finishedKeys = mutableSetOf<String>()
-
-        fun step(h: Int, m: Int) {
-            val now = dt(wed, h, m)
-            val active = Monitor.activeOccurrences(now, trains, settings, null, finishedKeys, statuses)
-            val out = Monitor.poll(now, active, statuses, settings, korail)
-            statuses = out.statuses.associateBy { it.key }
-            finished += out.finished
-            finishedKeys += out.finished.map { it.key }
-            alerts += out.alerts
-        }
-
-        step(19, 12)
-        assertEquals(3, statuses.size)
-        assertTrue(alerts.isEmpty())
-        assertEquals("정시", Texts.delayShort(statuses.values.first()))
-
-        // 20:12 열차에 4분 지연 → 첫 지연 알림
-        korail.trains = listOf(kt("350", "1945", 0), kt("1234", "1954", 0), kt("352", "2012", 4))
-        step(19, 20)
-        assertEquals(1, alerts.size)
-        assertTrue(alerts[0] is AlertEvent.FirstDelay)
-        assertEquals(4, (alerts[0] as AlertEvent.FirstDelay).delay)
-
-        // 5분: 차이 1분 → 알림 없음
-        korail.trains = listOf(kt("350", "1945", 0), kt("1234", "1954", 0), kt("352", "2012", 5))
-        step(19, 22)
-        assertEquals(1, alerts.size)
-
-        // 8분: 처음 알린 4분에서 4분 차이 → 변화 알림
-        korail.trains = listOf(kt("350", "1945", 0), kt("1234", "1954", 0), kt("352", "2012", 8))
-        step(19, 24)
-        assertEquals(2, alerts.size)
-        val changed = alerts[1] as AlertEvent.Changed
-        assertEquals(4, changed.from)
-        assertEquals(8, changed.to)
-        val s352 = statuses["wed352@$wed"]!!
-        assertEquals("천안아산 20:12 → 20:20 출발", Texts.depLine(s352))
-        assertEquals("수서 21:00 → 21:08 도착 예상", Texts.arrLine(s352))
-
-        // 19:50 → 19:45 열차(정시) 출발 5분 뒤라 종료
-        step(19, 50)
-        assertEquals(listOf("wed1945@$wed"), finished.map { it.key })
-
-        // 352 열차는 8분 지연이므로 20:12+8+5 = 20:25 까지 감시
-        korail.trains = listOf(kt("352", "2012", 8))
-        step(20, 24)
-        assertTrue(statuses.containsKey("wed352@$wed"))
-        step(20, 25)
-        assertTrue(finished.any { it.key == "wed352@$wed" })
-
-        val rec = HistoryRecord.from(finished.first { it.key == "wed352@$wed" })
-        assertEquals(8, rec.finalDelay)
-        assertEquals(8, rec.maxDelay)
-        assertEquals(52, rec.firstDelayMinBefore) // 19:20 에 처음 → 20:12 기준 52분 전
-        assertEquals(false, rec.presentAtStart)
-        assertEquals(listOf(60 to 0, 52 to 4, 50 to 5, 48 to 8), rec.timeline)
+    fun smallChangeNoAlertBigChangeAlerts() {
+        val now = dt(wed, 19, 20)
+        val (s1, _) = Monitor.apply(start("wed2012", wed, now), found(4), now, settings)
+        val (s2, a2) = Monitor.apply(s1, found(5), now.plusMinutes(2), settings)
+        assertNull(a2) // 1분 차이
+        val (_, a3) = Monitor.apply(s2, found(8), now.plusMinutes(4), settings)
+        assertTrue(a3 is AlertEvent.Changed && a3.from == 4 && a3.to == 8)
     }
 
     @Test
-    fun pagesWhenTrainBeyondFirstPage() {
-        // 한 페이지에 2대씩만 오는 경우 20:12 열차를 찾으려 다시 조회
-        val korail = FakeKorail(
-            listOf(kt("350", "1945", 0), kt("1234", "1954", 0), kt("1236", "2003", 0), kt("352", "2012", 2)),
-            pageSize = 2,
-        )
-        val occs = Monitor.occurrences(trains, wed, 1)
-        val (found, err) = Monitor.searchGroup("천안아산", "수서", wed, occs, korail)
-        assertNull(err)
-        assertEquals(3, found.size)
-        assertEquals(2, found["wed352@$wed"]!!.delayMin)
-        assertTrue(korail.calls.none { it.second }) // 수서 함께 보기 조회는 필요 없었음
-    }
-
-    @Test
-    fun retriesWithSuseoFlagWhenNotFound() {
-        val searcher = Searcher { _, _, _, _, includeSuseo ->
-            if (includeSuseo) SearchResult.Success(listOf(kt("324", "1249", 6)), "{}")
-            else SearchResult.Success(emptyList(), "{}")
-        }
-        val occ = Occurrence(trains[0], sun)
-        val (found, err) = Monitor.searchGroup("천안아산", "수서", sun, listOf(occ), searcher)
-        assertNull(err)
-        // depDate 가 20261028 이라 일요일과 안 맞음 → 못 찾음. 날짜를 맞춰 다시
-        assertTrue(found.isEmpty())
-        val searcher2 = Searcher { _, _, _, _, includeSuseo ->
-            if (includeSuseo) SearchResult.Success(listOf(kt("324", "1249", 6).copy(depDate = "20261025")), "{}")
-            else SearchResult.Success(emptyList(), "{}")
-        }
-        val (found2, _) = Monitor.searchGroup("천안아산", "수서", sun, listOf(occ), searcher2)
-        assertEquals(6, found2[occ.key]!!.delayMin)
+    fun separateArrivalDelay() {
+        val now = dt(wed, 19, 20)
+        // 출발은 7분 지연이지만 도착 때 4분으로 회복
+        val (s, _) = Monitor.apply(start("wed2012", wed, now), found(7, arrDelay = 4), now, settings)
+        assertEquals(7, s.delayMin)
+        assertEquals("수서 21:00 → 21:04 도착 예상", Texts.arrLine(s))
     }
 
     @Test
     fun errorKeepsLastKnownDelay() {
-        val occ = Occurrence(trains[0], sun)
         val now = dt(sun, 12, 0)
-        val (s1, a1) = Monitor.apply(TrainStatus.start(occ, now), kt("324", "1249", 6), null, now, settings)
-        assertTrue(a1 is AlertEvent.FirstDelay)
-        val (s2, a2) = Monitor.apply(s1, null, "timeout", now.plusMinutes(2), settings)
+        val (s1, _) = Monitor.apply(start("sun324", sun, now), found(6), now, settings)
+        val (s2, a2) = Monitor.apply(s1, Reading(found = false, error = "timeout"), now.plusMinutes(2), settings)
         assertNull(a2)
         assertEquals(6, s2.delayMin)
         assertEquals(Phase.RUNNING, s2.phase)
@@ -225,40 +148,106 @@ class MonitorTest {
 
     @Test
     fun errorWithoutDataIsErrorPhase() {
-        val occ = Occurrence(trains[0], sun)
         val now = dt(sun, 12, 0)
-        val (s, _) = Monitor.apply(TrainStatus.start(occ, now), null, "timeout", now, settings)
+        val (s, _) = Monitor.apply(start("sun324", sun, now), Reading(found = false, error = "timeout"), now, settings)
         assertEquals(Phase.ERROR, s.phase)
         assertEquals("조회 실패", Texts.delayShort(s))
     }
 
     @Test
+    fun notFoundWithoutDataIsNotFoundPhase() {
+        val now = dt(sun, 12, 0)
+        val (s, _) = Monitor.apply(start("sun324", sun, now), Reading(found = false, notFound = true), now, settings)
+        assertEquals(Phase.NOT_FOUND, s.phase)
+    }
+
+    @Test
     fun cancellationAlertsOnce() {
-        val occ = Occurrence(trains[4], LocalDate.of(2026, 10, 29))
-        val now = LocalDateTime.of(2026, 10, 29, 17, 30)
-        val t = kt("346", "1805", 0, cancelled = true)
-        val (s1, a1) = Monitor.apply(TrainStatus.start(occ, now), t, null, now, settings)
+        val now = dt(LocalDate.of(2026, 10, 29), 17, 30)
+        val (s1, a1) = Monitor.apply(start("thu346", LocalDate.of(2026, 10, 29), now), found(0, cancelled = true), now, settings)
         assertTrue(a1 is AlertEvent.Cancelled)
-        val (_, a2) = Monitor.apply(s1, t, null, now.plusMinutes(1), settings)
+        val (_, a2) = Monitor.apply(s1, found(0, cancelled = true), now.plusMinutes(1), settings)
         assertNull(a2)
         assertEquals("운행 취소", Texts.delayShort(s1))
     }
 
     @Test
     fun recoveryToOnTimeAlerts() {
-        val occ = Occurrence(trains[0], sun)
         val now = dt(sun, 12, 0)
-        val (s1, _) = Monitor.apply(TrainStatus.start(occ, now), kt("324", "1249", 5), null, now, settings)
-        val (_, a2) = Monitor.apply(s1, kt("324", "1249", 0), null, now.plusMinutes(2), settings)
+        val (s1, _) = Monitor.apply(start("sun324", sun, now), found(5), now, settings)
+        val (_, a2) = Monitor.apply(s1, found(0), now.plusMinutes(2), settings)
         assertTrue(a2 is AlertEvent.Changed && a2.to == 0)
     }
 
     @Test
     fun alertsDisabled() {
-        val occ = Occurrence(trains[0], sun)
         val now = dt(sun, 12, 0)
-        val (s, a) = Monitor.apply(TrainStatus.start(occ, now), kt("324", "1249", 9), null, now, settings.copy(alertsEnabled = false))
+        val (s, a) = Monitor.apply(start("sun324", sun, now), found(9), now, settings.copy(alertsEnabled = false))
         assertNull(a)
         assertEquals(9, s.delayMin)
+    }
+
+    // ---- poll() 전체 흐름 ----
+
+    @Test
+    fun fullWednesdayScenario() {
+        val src = FakeSource()
+        var statuses = emptyMap<String, TrainStatus>()
+        val finished = mutableListOf<TrainStatus>()
+        val alerts = mutableListOf<AlertEvent>()
+        val finishedKeys = mutableSetOf<String>()
+
+        fun step(h: Int, m: Int) {
+            val now = dt(wed, h, m)
+            val active = Monitor.activeOccurrences(now, trains, settings, null, finishedKeys, statuses)
+            val out = Monitor.poll(now, active, statuses, settings, src)
+            statuses = out.statuses.associateBy { it.key }
+            finished += out.finished
+            finishedKeys += out.finished.map { it.key }
+            alerts += out.alerts
+        }
+
+        // 모두 정시
+        src.byNo = { LookupResult.Success(train(it.trimStart('0'), 0)) }
+        step(19, 12)
+        assertEquals(3, statuses.size)
+        assertTrue(alerts.isEmpty())
+        assertEquals("정시", Texts.delayShort(statuses.values.first()))
+
+        // 20:12 열차(번호 614)만 7분 지연 → 첫 지연 알림 1건
+        src.byNo = { no -> LookupResult.Success(train(no.trimStart('0'), if (no == "00614") 7 else 0)) }
+        step(19, 20)
+        assertEquals(1, alerts.size)
+        assertTrue(alerts[0] is AlertEvent.FirstDelay)
+        val s614 = statuses["wed2012@$wed"]!!
+        assertEquals(7, s614.delayMin)
+        assertEquals("천안아산 20:12 → 20:19 출발", Texts.depLine(s614))
+
+        // 19:45 열차는 출발 5분 뒤(19:50) 종료
+        step(19, 50)
+        assertTrue(finished.any { it.key == "wed1945@$wed" })
+
+        // 614 열차는 7분 지연 → 20:12+7+5 = 20:24 까지 감시
+        step(20, 23)
+        assertTrue(statuses.containsKey("wed2012@$wed"))
+        step(20, 24)
+        val rec = HistoryRecord.from(finished.first { it.key == "wed2012@$wed" })
+        assertEquals(7, rec.finalDelay)
+        assertEquals(52, rec.firstDelayMinBefore) // 19:20 → 20:12 기준 52분 전
+    }
+
+    @Test
+    fun pollRecordsExpiredWithoutQuery() {
+        // 감시 중이던 열차가 다음 조회 대상에서 빠지고 시간이 지나면 기록으로 간다
+        val src = FakeSource().apply { byNo = { LookupResult.Success(train(it.trimStart('0'), 3)) } }
+        val now1 = dt(sun, 12, 0)
+        val occ = Occurrence(trains.first { it.id == "sun324" }, sun)
+        val out1 = Monitor.poll(now1, listOf(occ), emptyMap(), settings, src)
+        val prev = out1.statuses.associateBy { it.key }
+        assertTrue(prev.isNotEmpty())
+        // 한참 뒤, active 가 비어도 기존 상태는 종료 처리되어 기록으로
+        val out2 = Monitor.poll(dt(sun, 13, 30), emptyList(), prev, settings, src)
+        assertTrue(out2.statuses.isEmpty())
+        assertTrue(out2.finished.any { it.key == occ.key })
     }
 }

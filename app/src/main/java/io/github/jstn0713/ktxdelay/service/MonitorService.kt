@@ -10,7 +10,7 @@ import android.os.PowerManager
 import androidx.core.app.ServiceCompat
 import androidx.core.content.ContextCompat
 import io.github.jstn0713.ktxdelay.core.HistoryRecord
-import io.github.jstn0713.ktxdelay.core.KorailClient
+import io.github.jstn0713.ktxdelay.core.NaverClient
 import io.github.jstn0713.ktxdelay.core.Monitor
 import io.github.jstn0713.ktxdelay.core.nowKst
 import io.github.jstn0713.ktxdelay.data.AppRepo
@@ -32,6 +32,7 @@ import java.time.Duration
 class MonitorService : Service() {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private val source = NaverClient()
     private var loopJob: Job? = null
     private val wake = Channel<Unit>(Channel.CONFLATED)
     private var wakeLock: PowerManager.WakeLock? = null
@@ -76,7 +77,7 @@ class MonitorService : Service() {
                     now, AppRepo.trains.value, settings, AppRepo.skipDate.value, AppRepo.finishedKeys(), prev,
                 )
                 val outcome = try {
-                    Monitor.poll(now, active, prev, settings, KorailClient(settings.korailVersion))
+                    Monitor.poll(now, active, prev, settings, source)
                 } catch (e: Exception) {
                     null
                 }

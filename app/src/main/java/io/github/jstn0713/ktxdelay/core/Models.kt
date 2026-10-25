@@ -40,11 +40,13 @@ data class WatchTrain(
     val depStation: String,
     val arrStation: String,
     val depTime: LocalTime,
-    /** 열차 번호(숫자만). 모르면 빈 문자열이고, 그때는 출발 시각으로 열차를 찾는다. */
+    /** 열차 번호(숫자만). 네이버 조회에 꼭 필요하다. */
     val trainNo: String = "",
-    /** 예: "KTX-산천" (열차 찾기로 고르면 자동 입력) */
+    /** 예: "KTX-산천" */
     val trainName: String = "",
     val arrTime: LocalTime? = null,
+    /** "KORAIL" 또는 "SRT" */
+    val railwayCompany: String = "KORAIL",
     val enabled: Boolean = true,
 ) {
     val label: String
@@ -114,6 +116,8 @@ data class TrainStatus(
     val scheduledArr: LocalDateTime? = null,
     val monitorStartedAt: LocalDateTime,
     val delayMin: Int? = null,
+    /** 내릴 역 도착 지연(분). 출발 지연과 다를 수 있다(회복 운행 등). */
+    val arrDelayMin: Int? = null,
     val phase: Phase = Phase.WAITING,
     val lastCheckedAt: LocalDateTime? = null,
     val lastDataAt: LocalDateTime? = null,
@@ -126,7 +130,7 @@ data class TrainStatus(
     val delayRaw: String? = null,
 ) {
     val expectedDep: LocalDateTime get() = scheduledDep.plusMinutes((delayMin ?: 0).toLong())
-    val expectedArr: LocalDateTime? get() = scheduledArr?.plusMinutes((delayMin ?: 0).toLong())
+    val expectedArr: LocalDateTime? get() = scheduledArr?.plusMinutes((arrDelayMin ?: delayMin ?: 0).toLong())
 
     companion object {
         fun start(occ: Occurrence, now: LocalDateTime) = TrainStatus(

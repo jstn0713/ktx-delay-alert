@@ -30,6 +30,7 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
@@ -49,10 +50,11 @@ import androidx.compose.ui.unit.sp
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material3.Card
-import io.github.jstn0713.ktxdelay.core.KorailClient
-import io.github.jstn0713.ktxdelay.core.KorailTrain
+import io.github.jstn0713.ktxdelay.core.LookupResult
 import io.github.jstn0713.ktxdelay.core.Monitor
-import io.github.jstn0713.ktxdelay.core.SearchResult
+import io.github.jstn0713.ktxdelay.core.NaverClient
+import io.github.jstn0713.ktxdelay.core.NaverStop
+import io.github.jstn0713.ktxdelay.core.NaverTrain
 import io.github.jstn0713.ktxdelay.core.Texts
 import io.github.jstn0713.ktxdelay.core.TrainStatus
 import io.github.jstn0713.ktxdelay.core.hm
@@ -284,37 +286,39 @@ private fun TodayCard(
     }
 }
 
-/** 코레일 조회가 잘 되는지 바로 확인하는 카드 */
+/** 네이버 조회가 잘 되는지 바로 확인하는 카드 */
 @Composable
 private fun TestCard() {
     val ctx = LocalContext.current
     val trains by AppRepo.trains.collectAsState()
-    val settings by AppRepo.settings.collectAsState()
     val scope = rememberCoroutineScope()
+    var number by remember(trains) { mutableStateOf(trains.firstOrNull { it.trainNo.isNotBlank() }?.trainNo ?: "") }
     var loading by remember { mutableStateOf(false) }
     var result by remember { mutableStateOf<TestResult?>(null) }
-    val routes = trains.map { it.depStation to it.arrStation }.distinct()
 
-    SectionCard("코레일 조회 테스트") {
+    SectionCard("네이버 조회 테스트") {
         Text(
-            "지금 코레일에서 지연 정보를 제대로 가져오는지 확인해요. 결과를 코레일 홈페이지와 비교해 보세요.",
+            "열차 번호로 지금 네이버에서 지연 정보를 가져오는지 확인해요. 결과를 네이버 지도와 비교해 보세요.",
             style = MaterialTheme.typography.bodySmall,
         )
-        if (routes.isEmpty()) {
-            Text("열차를 먼저 등록하면 그 구간으로 조회해요.", style = MaterialTheme.typography.bodySmall)
-        }
-        routes.forEach { (dep, arr) ->
-            OutlinedButton(
-                enabled = !loading,
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+            OutlinedTextField(
+                value = number,
+                onValueChange = { number = it.filter { c -> c.isDigit() } },
+                label = { Text("열차 번호 (예: 352)") },
+                singleLine = true,
+                modifier = Modifier.weight(1f),
+            )
+            Button(
+                enabled = !loading && number.isNotBlank(),
                 onClick = {
                     loading = true
                     scope.launch {
-                        val from = nowKst().toLocalTime().minusMinutes(60).let { if (it.isAfter(nowKst().toLocalTime())) LocalTime.MIN else it }
-                        result = withContext(Dispatchers.IO) { runTest(dep, arr, from, settings.korailVersion) }
+                        result = withContext(Dispatchers.IO) { runTest(number) }
                         loading = false
                     }
                 },
-            ) { Text("$dep → $arr 지금 조회") }
+            ) { Text("지금 조회") }
         }
         if (loading) CircularProgressIndicator(Modifier.size(24.dp))
     }
@@ -324,18 +328,19 @@ private fun TestCard() {
             onDismissRequest = { result = null },
             title = { Text(r.title) },
             text = {
-                Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState()), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                     if (r.error != null) Text(r.error, color = MaterialTheme.colorScheme.error)
-                    if (r.trains.isEmpty() && r.error == null) Text("이 시간대에 조회된 열차가 없어요.")
-                    r.trains.forEach { t -> TestTrainRow(t) }
-                    if (r.usedSuseoFlag) Text("※ '수서 함께 보기' 방식으로 조회된 결과예요.", style = MaterialTheme.typography.bodySmall)
+                    if (r.train != null) {
+                        Text("${r.train.routeName} · ${r.train.company}", style = MaterialTheme.typography.bodySmall)
+                        r.train.stops.forEach { s -> TestStopRow(s) }
+                    }
                 }
             },
             confirmButton = { TextButton(onClick = { result = null }) { Text("닫기") } },
             dismissButton = {
                 TextButton(onClick = {
                     val cm = ctx.getSystemService(ClipboardManager::class.java)
-                    cm?.setPrimaryClip(ClipData.newPlainText("korail", r.raw))
+                    cm?.setPrimaryClip(ClipData.newPlainText("naver", r.raw))
                     Toast.makeText(ctx, "원본 데이터를 복사했어요", Toast.LENGTH_SHORT).show()
                 }) { Text("원본 복사") }
             },
@@ -344,58 +349,39 @@ private fun TestCard() {
 }
 
 @Composable
-private fun TestTrainRow(t: KorailTrain) {
-    Column {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            Text(
-                "${t.depLocalTime?.hm() ?: t.depTime} ${t.label}",
-                Modifier.weight(1f),
-                fontWeight = FontWeight.Bold,
-            )
-            Text(
-                if (t.cancelled) "운행 취소" else Texts.delayText(t.delayMin),
-                color = if (t.cancelled || t.delayMin > 0) delayRed() else onTimeGreen(),
-                fontWeight = FontWeight.Bold,
-            )
-        }
+private fun TestStopRow(s: NaverStop) {
+    Row(verticalAlignment = Alignment.CenterVertically) {
+        Text(s.name, Modifier.weight(1f), fontWeight = FontWeight.Bold)
         Text(
-            "${t.depStation} → ${t.arrStation} ${t.arrLocalTime?.hm() ?: ""} · 원본 지연값: ${t.delayRaw ?: "(없음)"}",
+            listOfNotNull(s.schedArr?.let { "도착 ${it.hm()}" }, s.schedDep?.let { "출발 ${it.hm()}" }).joinToString(" "),
             style = MaterialTheme.typography.bodySmall,
+            modifier = Modifier.padding(horizontal = 6.dp),
         )
-        val extra = t.delayFields.filterKeys { it != "h_expct_dlay_hr" }
-        if (extra.isNotEmpty()) {
-            Text("기타 지연 항목: $extra", style = MaterialTheme.typography.bodySmall)
-        }
+        Text(
+            Texts.delayText(s.delayMin),
+            color = if (s.delayMin > 0) delayRed() else onTimeGreen(),
+            fontWeight = FontWeight.Bold,
+        )
     }
 }
 
 private data class TestResult(
     val title: String,
-    val trains: List<KorailTrain>,
+    val train: NaverTrain?,
     val error: String?,
     val raw: String,
-    val usedSuseoFlag: Boolean,
 )
 
-private fun runTest(dep: String, arr: String, from: LocalTime, version: String): TestResult {
-    val client = KorailClient(version)
-    val today = nowKst().toLocalDate()
-    var res = client.search(dep, arr, today, from, false)
-    var suseo = false
-    if (res is SearchResult.Success && res.trains.isEmpty()) {
-        val second = client.search(dep, arr, today, from, true)
-        if (second is SearchResult.Success && second.trains.isNotEmpty()) {
-            res = second
-            suseo = true
-        }
-    }
-    val title = "$dep → $arr (${from.hm()} 이후)"
-    return when (res) {
-        is SearchResult.Success -> TestResult(title, res.trains, null, res.rawJson, suseo)
-        is SearchResult.Failure -> TestResult(
-            title, emptyList(),
-            res.message + (res.code?.let { " (코드 $it)" } ?: ""),
-            res.rawJson ?: res.message, suseo,
+private fun runTest(number: String): TestResult {
+    val date = nowKst().toLocalDate()
+    val title = "$number 번 (${date.monthValue}/${date.dayOfMonth})"
+    return when (val res = NaverClient().lookup(number, "KORAIL", date)) {
+        is LookupResult.Success -> TestResult(title, res.train, null, res.train.raw)
+        is LookupResult.NotFound -> TestResult(
+            title, null,
+            "이 번호의 열차가 오늘 조회되지 않아요. 번호·운행일(요일)을 확인하세요.",
+            res.rawJson ?: "(없음)",
         )
+        is LookupResult.Failure -> TestResult(title, null, "조회 실패: ${res.message}", res.detail ?: res.message)
     }
 }

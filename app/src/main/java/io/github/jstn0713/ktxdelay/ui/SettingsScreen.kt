@@ -45,7 +45,6 @@ fun SettingsScreen() {
     val s by AppRepo.settings.collectAsState()
     val scope = rememberCoroutineScope()
     var updateMsg by remember { mutableStateOf<String?>(null) }
-    var versionText by remember(s.korailVersion) { mutableStateOf(s.korailVersion) }
 
     fun save(n: AppSettings) {
         AppRepo.saveSettings(n)
@@ -94,35 +93,11 @@ fun SettingsScreen() {
             OutlinedButton(onClick = { PhoneSetup.openAppDetails(ctx) }) { Text("앱 정보(배터리·권한) 열기") }
         }
 
-        SectionCard("고급") {
-            Text(
-                "코레일이 조회 방식을 바꿔 '앱 업데이트' 같은 오류가 나면 이 값을 바꿔야 할 수 있어요. 평소엔 그대로 두세요.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            OutlinedTextField(
-                value = versionText,
-                onValueChange = { versionText = it.filter { c -> c.isDigit() } },
-                label = { Text("코레일 조회 버전 코드") },
-                singleLine = true,
-                modifier = Modifier.fillMaxWidth(),
-            )
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Button(
-                    enabled = versionText.isNotBlank() && versionText != s.korailVersion,
-                    onClick = { save(s.copy(korailVersion = versionText)) },
-                ) { Text("저장") }
-                OutlinedButton(onClick = {
-                    versionText = DEFAULT_KORAIL_VERSION
-                    save(s.copy(korailVersion = DEFAULT_KORAIL_VERSION))
-                }) { Text("기본값") }
-            }
-        }
-
         SectionCard("앱 정보") {
             Text("KTX 지연 알림 v${BuildConfig.VERSION_NAME}")
             Text(
-                "지연 정보는 코레일 앱이 쓰는 조회 기능에서 가져와요(공식 공개 기능이 아님). " +
-                    "실제 운행 정보는 코레일 안내를 우선해 주세요.",
+                "지연 정보는 네이버 지도의 기차 조회에서 가져와요(공식 공개 기능이 아닌 개인용). " +
+                    "실제 운행 정보는 코레일·네이버 안내를 우선해 주세요.",
                 style = MaterialTheme.typography.bodySmall,
             )
             Button(onClick = {

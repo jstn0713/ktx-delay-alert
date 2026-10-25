@@ -32,6 +32,7 @@ object Codec {
         put("no", t.trainNo)
         put("name", t.trainName)
         put("arrTime", t.arrTime?.hm() ?: JSONObject.NULL)
+        put("company", t.railwayCompany)
         put("enabled", t.enabled)
     }
 
@@ -46,6 +47,7 @@ object Codec {
             trainNo = o.optString("no"),
             trainName = o.optString("name"),
             arrTime = o.optStr("arrTime")?.let { LocalTime.parse(it) },
+            railwayCompany = o.optString("company", "KORAIL").ifBlank { "KORAIL" },
             enabled = o.optBoolean("enabled", true),
         )
     }
@@ -101,6 +103,7 @@ object Codec {
         put("scheduledArr", s.scheduledArr?.toString() ?: JSONObject.NULL)
         put("monitorStartedAt", s.monitorStartedAt.toString())
         put("delayMin", s.delayMin ?: JSONObject.NULL)
+        put("arrDelayMin", s.arrDelayMin ?: JSONObject.NULL)
         put("phase", s.phase.name)
         put("lastCheckedAt", s.lastCheckedAt?.toString() ?: JSONObject.NULL)
         put("lastDataAt", s.lastDataAt?.toString() ?: JSONObject.NULL)
@@ -125,6 +128,7 @@ object Codec {
             scheduledArr = dt(o, "scheduledArr"),
             monitorStartedAt = LocalDateTime.parse(o.getString("monitorStartedAt")),
             delayMin = o.optIntOrNull("delayMin"),
+            arrDelayMin = o.optIntOrNull("arrDelayMin"),
             phase = runCatching { Phase.valueOf(o.getString("phase")) }.getOrDefault(Phase.WAITING),
             lastCheckedAt = dt(o, "lastCheckedAt"),
             lastDataAt = dt(o, "lastDataAt"),

@@ -14,7 +14,6 @@ import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
-import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.lazy.LazyColumn
@@ -26,15 +25,12 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.Delete
-import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.Search
-import androidx.compose.material3.AlertDialog
-import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -45,6 +41,7 @@ import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.AlertDialog
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
@@ -61,16 +58,14 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import io.github.jstn0713.ktxdelay.core.DAY_NAMES
-import io.github.jstn0713.ktxdelay.core.KorailClient
-import io.github.jstn0713.ktxdelay.core.KorailTrain
-import io.github.jstn0713.ktxdelay.core.SearchResult
+import io.github.jstn0713.ktxdelay.core.LookupResult
+import io.github.jstn0713.ktxdelay.core.NaverClient
 import io.github.jstn0713.ktxdelay.core.Stations
 import io.github.jstn0713.ktxdelay.core.Texts
 import io.github.jstn0713.ktxdelay.core.WatchTrain
 import io.github.jstn0713.ktxdelay.core.hm
 import io.github.jstn0713.ktxdelay.core.nowKst
 import io.github.jstn0713.ktxdelay.core.parseHm
-import io.github.jstn0713.ktxdelay.core.shortLabel
 import io.github.jstn0713.ktxdelay.data.AppRepo
 import io.github.jstn0713.ktxdelay.service.MonitorService
 import io.github.jstn0713.ktxdelay.service.Scheduling
@@ -103,8 +98,8 @@ fun TrainsScreen(onEdit: (WatchTrain) -> Unit) {
                 SectionCard("등록된 열차가 없어요") {
                     Text("오른쪽 아래 + 버튼을 눌러 타는 열차를 추가하세요.")
                     Text(
-                        "같은 열차를 여러 요일에 타면 한 번에 여러 요일을 고를 수 있어요. " +
-                            "같은 날 여러 열차(예: 19:45, 19:54, 20:12)를 모두 보고 싶으면 각각 추가하세요.",
+                        "요일, 타는 역·내리는 역, 열차 번호를 넣으면 돼요. 같은 날 여러 열차" +
+                            "(예: 19:45, 19:54, 20:12)를 모두 보고 싶으면 각각 추가하세요.",
                         style = MaterialTheme.typography.bodySmall,
                     )
                 }
@@ -145,7 +140,6 @@ fun TrainsScreen(onEdit: (WatchTrain) -> Unit) {
 fun TrainEditorScreen(initial: WatchTrain, isNew: Boolean, onClose: () -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
-    val settings by AppRepo.settings.collectAsState()
 
     var days by remember { mutableStateOf(initial.days) }
     var dep by remember { mutableStateOf(initial.depStation) }
@@ -157,35 +151,63 @@ fun TrainEditorScreen(initial: WatchTrain, isNew: Boolean, onClose: () -> Unit) 
     var error by remember { mutableStateOf<String?>(null) }
     var confirmDelete by remember { mutableStateOf(false) }
 
-    var searchOpen by remember { mutableStateOf(false) }
-    var searching by remember { mutableStateOf(false) }
-    var searchDate by remember { mutableStateOf(LocalDate.now()) }
-    var searchTrains by remember { mutableStateOf<List<KorailTrain>>(emptyList()) }
-    var searchError by remember { mutableStateOf<String?>(null) }
+    var checking by remember { mutableStateOf(false) }
+    var checkResult by remember { mutableStateOf<String?>(null) }
+    var checkOk by remember { mutableStateOf(false) }
 
-    fun runSearch(from: LocalTime, append: Boolean) {
-        searching = true
-        searchError = null
+    fun checkDate(): LocalDate {
+        val today = nowKst().toLocalDate()
+        return if (days.isEmpty()) today
+        else (0..7).map { today.plusDays(it.toLong()) }.firstOrNull { it.dayOfWeek.value in days } ?: today
+    }
+
+    fun verifyNumber() {
+        if (dep.isBlank() || arr.isBlank() || trainNo.isBlank()) {
+            checkResult = "타는 역·내리는 역·열차 번호를 먼저 넣어주세요."
+            checkOk = false
+            return
+        }
+        checking = true
+        checkResult = null
         scope.launch {
-            val today = nowKst().toLocalDate()
-            // 고른 요일 중 가장 가까운 날로 조회 (요일을 안 골랐으면 오늘)
-            val date = if (days.isEmpty()) today
-            else (0..7).map { today.plusDays(it.toLong()) }.first { it.dayOfWeek.value in days }
-            val res = withContext(Dispatchers.IO) {
-                val client = KorailClient(settings.korailVersion)
-                val r = client.search(dep, arr, date, from, false)
-                if (r is SearchResult.Success && r.trains.isEmpty()) client.search(dep, arr, date, from, true) else r
-            }
-            searchDate = date
+            val date = checkDate()
+            val res = withContext(Dispatchers.IO) { NaverClient().lookup(trainNo, initial.railwayCompany, date) }
             when (res) {
-                is SearchResult.Success -> {
-                    val merged = if (append) (searchTrains + res.trains).distinctBy { it.trainNo + it.depTime } else res.trains
-                    searchTrains = merged
-                    if (merged.isEmpty()) searchError = "조회된 열차가 없어요. 역 이름을 확인하세요."
+                is LookupResult.Success -> {
+                    val t = res.train
+                    val depStop = t.stopFor(dep)
+                    val arrStop = t.stopFor(arr)
+                    if (depStop == null) {
+                        checkOk = false
+                        checkResult = "${t.label}은(는) ${dep}에 서지 않아요. 번호나 역을 확인하세요.\n" +
+                            "(정차역: ${t.stops.joinToString(", ") { it.name }})"
+                    } else {
+                        checkOk = true
+                        trainName = t.trainName
+                        depStop.schedDep?.let { timeText = it.hm() }
+                        arrTime = arrStop?.schedArr
+                        checkResult = buildString {
+                            append("확인됨: ${t.label}\n")
+                            append("$dep ${depStop.schedDep?.hm() ?: "?"} 출발")
+                            if (depStop.delayMin > 0) append(" · 지금 ${depStop.delayMin}분 지연")
+                            if (arrStop != null) {
+                                append("\n$arr ${arrStop.schedArr?.hm() ?: "?"} 도착")
+                                if (arrStop.delayMin > 0) append(" · ${arrStop.delayMin}분 지연")
+                            }
+                        }
+                    }
                 }
-                is SearchResult.Failure -> searchError = res.message
+                is LookupResult.NotFound -> {
+                    checkOk = false
+                    checkResult = "${date.monthValue}/${date.dayOfMonth} 에 이 번호의 열차가 조회되지 않아요. " +
+                        "번호와 요일(운행일)을 확인하세요."
+                }
+                is LookupResult.Failure -> {
+                    checkOk = false
+                    checkResult = "조회 실패: ${res.message}"
+                }
             }
-            searching = false
+            checking = false
         }
     }
 
@@ -195,6 +217,7 @@ fun TrainEditorScreen(initial: WatchTrain, isNew: Boolean, onClose: () -> Unit) 
             days.isEmpty() -> "요일을 하나 이상 고르세요."
             dep.isBlank() || arr.isBlank() -> "타는 역과 내리는 역을 입력하세요."
             dep.trim() == arr.trim() -> "타는 역과 내리는 역이 같아요."
+            trainNo.filter { it.isDigit() }.isBlank() -> "열차 번호를 입력하세요. (네이버 조회에 꼭 필요해요)"
             t == null -> "출발 시각을 20:12 처럼 입력하세요."
             else -> null
         }
@@ -258,59 +281,59 @@ fun TrainEditorScreen(initial: WatchTrain, isNew: Boolean, onClose: () -> Unit) 
             }
 
             Text("② 구간", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
-            StationField("타는 역", dep) { dep = it }
+            StationField("타는 역", dep) { dep = it; checkOk = false }
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.Center) {
-                TextButton(onClick = { val x = dep; dep = arr; arr = x }) { Text("⇅ 바꾸기") }
+                TextButton(onClick = { val x = dep; dep = arr; arr = x; checkOk = false }) { Text("⇅ 바꾸기") }
             }
-            StationField("내리는 역", arr) { arr = it }
+            StationField("내리는 역", arr) { arr = it; checkOk = false }
 
-            Text("③ 열차", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text("③ 열차 번호", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             Text(
-                "'열차 찾기'로 코레일 시간표에서 고르면 시각과 번호가 자동으로 들어가요. 직접 입력해도 돼요.",
+                "KTX 번호를 넣고 '번호 확인'을 누르면 네이버에서 조회해 시각을 채워줘요. " +
+                    "번호를 모르면 네이버 지도에서 이 구간을 검색해 열차 번호를 확인하세요.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(
-                enabled = dep.isNotBlank() && arr.isNotBlank() && !searching,
-                onClick = {
-                    searchOpen = true
-                    searchTrains = emptyList()
-                    val base = parseHm(timeText)
-                    val from = when {
-                        base == null -> LocalTime.of(5, 0)
-                        base.hour == 0 -> LocalTime.MIN
-                        else -> base.minusMinutes(60)
-                    }
-                    runSearch(from, append = false)
-                },
-            ) {
-                Icon(Icons.Filled.Search, contentDescription = null)
-                Text("  열차 찾기")
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                OutlinedTextField(
+                    value = trainNo,
+                    onValueChange = { trainNo = it.filter { c -> c.isDigit() }; checkOk = false },
+                    label = { Text("열차 번호 (예: 352)") },
+                    singleLine = true,
+                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
+                    modifier = Modifier.weight(1f),
+                )
+                Button(enabled = !checking, onClick = { verifyNumber() }) {
+                    Icon(Icons.Filled.Search, contentDescription = null)
+                    Text("  번호 확인")
+                }
             }
+            TextButton(onClick = { PhoneSetup.openUrl(ctx, "https://map.naver.com/") }) {
+                Text("번호를 모르면: 네이버 지도 열기")
+            }
+            if (checking) CircularProgressIndicator(Modifier.size(24.dp))
+            checkResult?.let { msg ->
+                Card(
+                    colors = CardDefaults.cardColors(
+                        containerColor = if (checkOk) MaterialTheme.colorScheme.secondaryContainer else MaterialTheme.colorScheme.errorContainer,
+                    ),
+                ) { Text(msg, Modifier.padding(12.dp), style = MaterialTheme.typography.bodySmall) }
+            }
+
+            Text("④ 출발 시각", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = timeText,
-                    onValueChange = { timeText = it; arrTime = null },
-                    label = { Text("출발 시각 (예: 20:12)") },
+                    onValueChange = { timeText = it },
+                    label = { Text("예: 20:12") },
                     singleLine = true,
                     modifier = Modifier.weight(1f),
                 )
                 OutlinedButton(onClick = {
                     val t = parseHm(timeText) ?: LocalTime.of(8, 0)
-                    TimePickerDialog(ctx, { _, h, m ->
-                        timeText = LocalTime.of(h, m).hm()
-                        arrTime = null
-                    }, t.hour, t.minute, true).show()
+                    TimePickerDialog(ctx, { _, h, m -> timeText = LocalTime.of(h, m).hm() }, t.hour, t.minute, true).show()
                 }) { Text("시각 선택") }
             }
-            OutlinedTextField(
-                value = trainNo,
-                onValueChange = { trainNo = it.filter { c -> c.isDigit() } },
-                label = { Text("열차 번호 (모르면 비워두세요)") },
-                singleLine = true,
-                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                modifier = Modifier.fillMaxWidth(),
-            )
             if (trainName.isNotBlank() || arrTime != null) {
                 Text(
                     listOfNotNull(trainName.ifBlank { null }, arrTime?.let { "$arr ${it.hm()} 도착" }).joinToString(" · "),
@@ -323,54 +346,6 @@ fun TrainEditorScreen(initial: WatchTrain, isNew: Boolean, onClose: () -> Unit) 
             Button(onClick = { save() }, modifier = Modifier.fillMaxWidth()) { Text("저장") }
             Spacer(Modifier.size(40.dp))
         }
-    }
-
-    if (searchOpen) {
-        AlertDialog(
-            onDismissRequest = { searchOpen = false },
-            title = { Text("$dep → $arr · ${searchDate.shortLabel()}") },
-            text = {
-                Column(Modifier.heightIn(max = 480.dp).verticalScroll(rememberScrollState())) {
-                    searchError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    searchTrains.forEach { t ->
-                        Column(
-                            Modifier.fillMaxWidth().clickable {
-                                t.depLocalTime?.let { timeText = it.hm() }
-                                trainNo = t.trainNo
-                                trainName = t.trainName
-                                arrTime = t.arrLocalTime
-                                searchOpen = false
-                            }.padding(vertical = 10.dp),
-                        ) {
-                            Row(verticalAlignment = Alignment.CenterVertically) {
-                                Text(
-                                    "${t.depLocalTime?.hm() ?: "?"} → ${t.arrLocalTime?.hm() ?: "?"}",
-                                    Modifier.weight(1f),
-                                    fontWeight = FontWeight.Bold,
-                                )
-                                if (t.delayMin > 0) Text(Texts.delayText(t.delayMin), color = delayRed())
-                            }
-                            Text(t.label, style = MaterialTheme.typography.bodySmall)
-                        }
-                        HorizontalDivider()
-                    }
-                    if (searching) CircularProgressIndicator(Modifier.padding(12.dp).size(28.dp))
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = !searching && searchTrains.isNotEmpty(),
-                    onClick = {
-                        val last = searchTrains.mapNotNull { it.depLocalTime }.maxOrNull() ?: return@TextButton
-                        runSearch(last.plusMinutes(1), append = true)
-                    },
-                ) {
-                    Icon(Icons.Filled.Refresh, contentDescription = null)
-                    Text(" 다음 열차 더 보기")
-                }
-            },
-            dismissButton = { TextButton(onClick = { searchOpen = false }) { Text("닫기") } },
-        )
     }
 
     if (confirmDelete) {
@@ -408,7 +383,9 @@ private fun StationField(label: String, value: String, onChange: (String) -> Uni
                 Modifier.fillMaxWidth().horizontalScroll(rememberScrollState()).padding(top = 4.dp),
                 horizontalArrangement = Arrangement.spacedBy(6.dp),
             ) {
-                suggestions.forEach { s -> AssistChip(onClick = { onChange(s) }, label = { Text(s) }) }
+                suggestions.forEach { s ->
+                    androidx.compose.material3.AssistChip(onClick = { onChange(s) }, label = { Text(s) })
+                }
             }
         }
     }
