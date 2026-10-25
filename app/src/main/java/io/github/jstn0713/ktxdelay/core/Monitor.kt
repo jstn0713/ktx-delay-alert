@@ -44,6 +44,12 @@ object Monitor {
     /** 출발 예정 시각에서 이만큼 지나면 무조건 감시 종료 */
     private const val HARD_END_MIN = 180L
 
+    /**
+     * 아직 한 번도 확인하지 않은 열차는 예정 시각이 이만큼 지날 때까지 한 번은 조회해 본다.
+     * 예정 시각만 보고 "지나감"으로 치면, 실제로는 지연돼서 아직 안 온 열차를 놓친다.
+     */
+    const val LATE_JOIN_GRACE_MIN = 120L
+
     fun occurrences(trains: List<WatchTrain>, from: LocalDate, days: Int): List<Occurrence> =
         (0 until days).flatMap { i ->
             val date = from.plusDays(i.toLong())
@@ -57,6 +63,12 @@ object Monitor {
         if (!now.isBefore(s.scheduledDep.plusMinutes(HARD_END_MIN))) return true
         return !now.isBefore(s.expectedDep.plusMinutes(settings.endAfterDepartureMin.toLong()))
     }
+
+    /**
+     * 끝난 열차를 기록(통계)에 남길지. 열차가 실제로 떠난 뒤에야 처음 확인한 경우는
+     * "출발 전에 지연을 알았는지"를 말해 주지 못하므로 남기지 않는다.
+     */
+    fun shouldRecord(s: TrainStatus): Boolean = s.monitorStartedAt.isBefore(s.expectedDep)
 
     /** 지금 감시해야 하는 열차들. */
     fun activeOccurrences(
@@ -75,7 +87,7 @@ object Monitor {
                     run {
                         val s = statuses[occ.key]
                         if (s != null) !isFinished(s, now, settings)
-                        else now.isBefore(occ.scheduledDep.plusMinutes(settings.endAfterDepartureMin.toLong()))
+                        else now.isBefore(occ.scheduledDep.plusMinutes(LATE_JOIN_GRACE_MIN))
                     }
             }
             .sortedBy { it.scheduledDep }

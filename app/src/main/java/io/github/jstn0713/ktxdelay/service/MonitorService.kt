@@ -87,7 +87,7 @@ class MonitorService : Service() {
                     continue
                 } else {
                     if (outcome.finished.isNotEmpty()) {
-                        AppRepo.addHistory(outcome.finished.map { HistoryRecord.from(it) })
+                        AppRepo.addHistory(outcome.finished.filter { Monitor.shouldRecord(it) }.map { HistoryRecord.from(it) })
                         AppRepo.addFinished(outcome.finished.map { it.key })
                     }
                     AppRepo.setStatuses(outcome.statuses)

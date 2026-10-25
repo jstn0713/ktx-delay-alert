@@ -1,6 +1,7 @@
 package io.github.jstn0713.ktxdelay.core
 
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -67,7 +68,58 @@ class MonitorTest {
         assertEquals(listOf("wed1945"), at(18, 45))
         assertEquals(listOf("wed1945", "wed1954"), at(18, 54))
         assertEquals(listOf("wed1945", "wed1954", "wed2012"), at(19, 12))
-        assertEquals(listOf("wed1954", "wed2012"), at(19, 50))
+        // 19:45 열차를 아직 한 번도 확인 안 했다면, 예정 시각이 지나도 지연 여부를 확인하러 포함
+        assertEquals(listOf("wed1945", "wed1954", "wed2012"), at(19, 50))
+    }
+
+    // ---- 예정 시각이 지난 뒤 처음 확인하는 열차 (지연 중일 수 있음) ----
+
+    private val sun262 = watch("sun262", 7, "13:18", "262")
+
+    @Test
+    fun lateJoinDelayedTrainIsStillMonitored() {
+        // 13:18 예정 열차를 13:24 에 처음 확인. 실제로는 13분 지연 → 13:31 출발
+        val src = FakeSource().apply { byNo = { LookupResult.Success(train("262", 13)) } }
+        val now = dt(sun, 13, 24)
+        val active = Monitor.activeOccurrences(now, listOf(sun262), settings, null, emptySet(), emptyMap())
+        assertEquals(listOf("sun262"), active.map { it.train.id })
+
+        val out = Monitor.poll(now, active, emptyMap(), settings, src)
+        val s = out.statuses.single()
+        assertEquals(13, s.delayMin)
+        assertEquals(dt(sun, 13, 31), s.expectedDep)
+        assertTrue(out.finished.isEmpty())
+        assertTrue(Monitor.shouldRecord(s)) // 떠나기 전에 확인했으니 기록 대상
+
+        // 13:31 출발 + 5분 = 13:36 에 종료
+        val prev = out.statuses.associateBy { it.key }
+        assertEquals(1, Monitor.activeOccurrences(dt(sun, 13, 35), listOf(sun262), settings, null, emptySet(), prev).size)
+        assertTrue(Monitor.activeOccurrences(dt(sun, 13, 36), listOf(sun262), settings, null, emptySet(), prev).isEmpty())
+    }
+
+    @Test
+    fun lateJoinAlreadyDepartedFinishesWithoutRecord() {
+        // 13:24 에 처음 확인했는데 정시 → 이미 13:18 에 떠났음
+        val src = FakeSource().apply { byNo = { LookupResult.Success(train("262", 0)) } }
+        val now = dt(sun, 13, 24)
+        val active = Monitor.activeOccurrences(now, listOf(sun262), settings, null, emptySet(), emptyMap())
+        val out = Monitor.poll(now, active, emptyMap(), settings, src)
+        assertTrue(out.statuses.isEmpty())
+        assertFalse(Monitor.shouldRecord(out.finished.single()))
+    }
+
+    @Test
+    fun lateJoinBeyondGraceIgnored() {
+        // 예정 13:18 + 2시간 = 15:18 이후로는 확인하지 않음
+        assertEquals(1, Monitor.activeOccurrences(dt(sun, 15, 17), listOf(sun262), settings, null, emptySet(), emptyMap()).size)
+        assertTrue(Monitor.activeOccurrences(dt(sun, 15, 18), listOf(sun262), settings, null, emptySet(), emptyMap()).isEmpty())
+    }
+
+    @Test
+    fun lateJoinAlreadyCheckedIsNotRequeried() {
+        // 한 번 확인해서 끝난 열차(finishedKeys)는 다시 조회하지 않음
+        val key = Occurrence(sun262, sun).key
+        assertTrue(Monitor.activeOccurrences(dt(sun, 13, 30), listOf(sun262), settings, null, setOf(key), emptyMap()).isEmpty())
     }
 
     @Test
@@ -231,7 +283,9 @@ class MonitorTest {
         step(20, 23)
         assertTrue(statuses.containsKey("wed2012@$wed"))
         step(20, 24)
-        val rec = HistoryRecord.from(finished.first { it.key == "wed2012@$wed" })
+        val done614 = finished.first { it.key == "wed2012@$wed" }
+        assertTrue(Monitor.shouldRecord(done614)) // 출발 60분 전부터 본 열차는 기록
+        val rec = HistoryRecord.from(done614)
         assertEquals(7, rec.finalDelay)
         assertEquals(52, rec.firstDelayMinBefore) // 19:20 → 20:12 기준 52분 전
     }

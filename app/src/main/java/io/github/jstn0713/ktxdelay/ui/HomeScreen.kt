@@ -233,6 +233,7 @@ private fun TodayCard(
     val skipped = skipDate == today
     val todays = Monitor.occurrences(trains, today, 1).sortedBy { it.scheduledDep }
     val liveKeys = live.map { it.key }.toSet()
+    val finishedKeys = AppRepo.finishedKeys()
 
     SectionCard("오늘 ${today.shortLabel()}") {
         if (todays.isEmpty()) {
@@ -250,7 +251,10 @@ private fun TodayCard(
                     }
                     skipped -> "오늘은 꺼짐"
                     now.isBefore(start) -> "${start.hm()}부터 확인"
-                    now.isBefore(occ.scheduledDep.plusMinutes(settings.endAfterDepartureMin.toLong())) -> "곧 확인 시작"
+                    // 네이버로 확인해 보니 이미 떠난 열차
+                    occ.key in finishedKeys -> "출발함"
+                    // 예정 시각은 지났어도 지연 중일 수 있어 확인하는 중
+                    now.isBefore(occ.scheduledDep.plusMinutes(Monitor.LATE_JOIN_GRACE_MIN)) -> "지연 여부 확인 중"
                     else -> "지나감"
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {

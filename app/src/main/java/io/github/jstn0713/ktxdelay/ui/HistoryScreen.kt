@@ -139,6 +139,8 @@ private fun RecordRow(r: HistoryRecord) {
             }
             val sub = buildList {
                 when {
+                    r.presentAtStart && r.monitorStartMinBefore < 0 ->
+                        add("예정 출발 ${-r.monitorStartMinBefore}분 뒤 확인 시작 · 이미 지연 중")
                     r.presentAtStart -> add("확인 시작(출발 ${r.monitorStartMinBefore}분 전)부터 지연 표시")
                     r.firstDelayMinBefore != null -> add("처음 표시: 출발 ${r.firstDelayMinBefore}분 전")
                 }
