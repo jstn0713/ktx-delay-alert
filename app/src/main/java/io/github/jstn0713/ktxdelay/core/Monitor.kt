@@ -257,10 +257,11 @@ object Monitor {
 object Texts {
     fun delayShort(s: TrainStatus): String = when (s.phase) {
         Phase.CANCELLED -> "운행 취소"
-        Phase.WAITING -> "확인 중"
+        Phase.WAITING -> "조회 중…"
         Phase.NOT_FOUND -> "정보 없음"
         Phase.ERROR -> "조회 실패"
-        Phase.RUNNING -> delayText(s.delayMin ?: 0)
+        // 아직 한 번도 데이터를 못 받았으면 지연값이 있어도 '조회 중'으로 본다
+        Phase.RUNNING -> if (s.lastDataAt == null) "조회 중…" else delayText(s.delayMin ?: 0)
     }
 
     fun delayText(delay: Int): String = if (delay <= 0) "정시" else "${delay}분 지연"

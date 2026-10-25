@@ -34,6 +34,7 @@ fun onTimeGreen(): Color = if (isSystemInDarkTheme()) Color(0xFF81C784) else Col
 @Composable
 fun statusColor(s: TrainStatus): Color = when {
     s.phase == Phase.CANCELLED -> delayRed()
+    s.phase == Phase.RUNNING && s.lastDataAt == null -> MaterialTheme.colorScheme.onSurfaceVariant
     s.phase == Phase.RUNNING && (s.delayMin ?: 0) > 0 -> delayRed()
     s.phase == Phase.RUNNING -> onTimeGreen()
     else -> MaterialTheme.colorScheme.onSurfaceVariant

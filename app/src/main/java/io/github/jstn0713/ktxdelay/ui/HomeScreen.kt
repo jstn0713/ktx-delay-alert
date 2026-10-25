@@ -176,7 +176,7 @@ private fun SetupCard() {
 @Composable
 private fun LiveCard(live: List<TrainStatus>, monitoring: Boolean, lastPoll: java.time.LocalDateTime?, interval: Int?) {
     val ctx = LocalContext.current
-    SectionCard(if (monitoring) "실시간 지연 (확인 중)" else "실시간 지연") {
+    SectionCard(if (monitoring) "실시간 지연 · 감시 중" else "실시간 지연") {
         live.forEachIndexed { i, s ->
             if (i > 0) HorizontalDivider()
             StatusBlock(s)
@@ -242,8 +242,9 @@ private fun TodayCard(
             todays.forEach { occ ->
                 val start = Monitor.windowStart(occ, settings)
                 val done = doneToday[occ.key]
+                val liveStatus = live.firstOrNull { it.key == occ.key }
                 val state = when {
-                    occ.key in liveKeys -> "확인 중"
+                    liveStatus != null -> Texts.delayShort(liveStatus) // 조회 중…/정시/N분 지연
                     done != null -> "끝남 · " + when {
                         done.cancelled -> "운행 취소"
                         done.finalDelay == null -> "정보 없음"
@@ -254,7 +255,7 @@ private fun TodayCard(
                     // 네이버로 확인해 보니 이미 떠난 열차
                     occ.key in finishedKeys -> "출발함"
                     // 예정 시각은 지났어도 지연 중일 수 있어 확인하는 중
-                    now.isBefore(occ.scheduledDep.plusMinutes(Monitor.LATE_JOIN_GRACE_MIN)) -> "지연 여부 확인 중"
+                    now.isBefore(occ.scheduledDep.plusMinutes(Monitor.LATE_JOIN_GRACE_MIN)) -> "출발 여부 확인 중"
                     else -> "지나감"
                 }
                 Row(Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
