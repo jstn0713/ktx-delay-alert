@@ -55,10 +55,14 @@ class NaverParserTest {
         assertNull(t.stopFor("서울"))
     }
 
+    // 2026-10-25 12:30 — 천안아산(12:00 예정)은 이미 지남, 모두 정시였음
+    private val at = java.time.LocalDateTime.of(2026, 10, 25, 12, 30)
+    private val day = java.time.LocalDate.of(2026, 10, 25)
+
     @Test
     fun readingForRoute() {
         val result = NaverParser.parse(realJson)
-        val reading = Monitor.readingFrom(result, "천안아산", "수서")
+        val reading = Monitor.readingFrom(result, "천안아산", "수서", day, at)
         assertTrue(reading.found)
         assertEquals(0, reading.departDelayMin)
         assertEquals(0, reading.arrDelayMin)
@@ -69,7 +73,7 @@ class NaverParserTest {
     @Test
     fun readingNotFoundWhenStationMissing() {
         val result = NaverParser.parse(realJson)
-        val reading = Monitor.readingFrom(result, "서울", "수서")
+        val reading = Monitor.readingFrom(result, "서울", "수서", day, at)
         assertFalse(reading.found)
         assertTrue(reading.notFound)
     }

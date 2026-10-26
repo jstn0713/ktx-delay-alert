@@ -59,6 +59,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import io.github.jstn0713.ktxdelay.core.DAY_NAMES
 import io.github.jstn0713.ktxdelay.core.LookupResult
+import io.github.jstn0713.ktxdelay.core.Monitor
 import io.github.jstn0713.ktxdelay.core.NaverClient
 import io.github.jstn0713.ktxdelay.core.Stations
 import io.github.jstn0713.ktxdelay.core.Texts
@@ -186,13 +187,16 @@ fun TrainEditorScreen(initial: WatchTrain, isNew: Boolean, onClose: () -> Unit) 
                         trainName = t.trainName
                         depStop.schedDep?.let { timeText = it.hm() }
                         arrTime = arrStop?.schedArr
+                        val nowk = nowKst()
+                        val depEff = Monitor.effectiveDelay(t.stops, depStop, date, nowk)
+                        val arrEff = arrStop?.let { Monitor.effectiveDelay(t.stops, it, date, nowk) }
                         checkResult = buildString {
                             append("확인됨: ${t.label}\n")
                             append("$dep ${depStop.schedDep?.hm() ?: "?"} 출발")
-                            if (depStop.delayMin > 0) append(" · 지금 ${depStop.delayMin}분 지연")
+                            if (depEff > 0) append(" · 지금 ${depEff}분 지연")
                             if (arrStop != null) {
                                 append("\n$arr ${arrStop.schedArr?.hm() ?: "?"} 도착")
-                                if (arrStop.delayMin > 0) append(" · ${arrStop.delayMin}분 지연")
+                                if ((arrEff ?: 0) > 0) append(" · ${arrEff}분 지연")
                             }
                         }
                     }

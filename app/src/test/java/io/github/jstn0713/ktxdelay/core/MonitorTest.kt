@@ -153,8 +153,12 @@ class MonitorTest {
     private fun start(id: String, date: LocalDate, now: LocalDateTime): TrainStatus =
         TrainStatus.start(Occurrence(trains.first { it.id == id }, date), now)
 
+    // 타는 역(천안아산 20:12)·내리는 역이 아직 안 온 시각으로 평가 → 그 역 자체 지연값이 그대로 쓰임
     private fun found(depDelay: Int, arrDelay: Int = depDelay, cancelled: Boolean = false) =
-        Monitor.readingFrom(LookupResult.Success(train("614", depDelay, arrDelay, cancelled)), "천안아산", "수서")
+        Monitor.readingFrom(
+            LookupResult.Success(train("614", depDelay, arrDelay, cancelled)),
+            "천안아산", "수서", wed, dt(wed, 19, 0),
+        )
 
     @Test
     fun firstDelayAlertsAndFillsArrival() {
@@ -185,6 +189,28 @@ class MonitorTest {
         val (s, _) = Monitor.apply(start("wed2012", wed, now), found(7, arrDelay = 4), now, settings)
         assertEquals(7, s.delayMin)
         assertEquals("수서 21:00 → 21:04 도착 예상", Texts.arrLine(s))
+    }
+
+    @Test
+    fun runningDelayUsedWhenBoardingNotReached() {
+        // KTX 028 상황: 상류(동대구·대전)는 +5 지연, 타는 역(천안아산)은 아직 안 와서 0으로 옴
+        val stops = listOf(
+            NaverStop("0020", "부산", LocalTime.of(9, 49), null, 0, 1),
+            NaverStop("0015", "동대구", LocalTime.of(10, 48), LocalTime.of(10, 43), 5, 2),
+            NaverStop("0010", "대전", LocalTime.of(11, 31), LocalTime.of(11, 29), 5, 3),
+            NaverStop("0502", "천안아산", LocalTime.of(11, 50), LocalTime.of(11, 48), 0, 4),
+            NaverStop("0001", "서울", null, LocalTime.of(12, 10), 0, 5),
+        )
+        val t = NaverTrain("00028", "028", "KTX", "KORAIL", "경부", "부산", "서울", stops, false, "{}")
+        val now = dt(sun, 11, 35) // 부산·동대구·대전 지남, 천안아산·서울 아직
+        val r = Monitor.readingFrom(LookupResult.Success(t), "천안아산", "서울", sun, now)
+        assertTrue(r.found)
+        assertEquals(5, r.departDelayMin) // 타는 역 0이지만 현재 5분 늦게 달림 → 5
+        assertEquals(5, r.arrDelayMin)
+
+        // 아직 아무 역도 안 지난 시각이면 상류 지연을 못 봐서 타는 역 값(0) 그대로
+        val early = Monitor.readingFrom(LookupResult.Success(t), "천안아산", "서울", sun, dt(sun, 9, 0))
+        assertEquals(0, early.departDelayMin)
     }
 
     @Test

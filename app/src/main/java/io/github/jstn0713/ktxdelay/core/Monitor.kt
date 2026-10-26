@@ -126,29 +126,57 @@ object Monitor {
         return Duration.ofMinutes(min.coerceAtLeast(1).toLong())
     }
 
-    /** 조회 결과를 내 구간에 맞게 해석한다. */
-    fun readingFrom(result: LookupResult, dep: String, arr: String): Reading = when (result) {
-        is LookupResult.Failure -> Reading(found = false, error = result.message)
-        is LookupResult.NotFound -> Reading(found = false, notFound = true)
-        is LookupResult.Success -> {
-            val t = result.train
-            val depStop = t.stopFor(dep)
-            if (depStop == null) {
-                // 이 번호의 열차가 그 역에 안 섬 → 번호가 틀렸거나 다른 열차
-                Reading(found = false, notFound = true)
-            } else {
-                val arrStop = t.stopFor(arr)
-                Reading(
-                    found = true,
-                    cancelled = t.cancelled,
-                    trainName = t.label,
-                    departDelayMin = depStop.delayMin,
-                    arrDelayMin = arrStop?.delayMin,
-                    schedDep = depStop.schedDep,
-                    schedArr = arrStop?.schedArr,
-                )
+    /**
+     * 조회 결과를 내 구간에 맞게 해석한다.
+     *
+     * 타는 역이 아직 안 온 역이면 그 역의 지연값은 보통 0(아직 도착 안 함)이다.
+     * 그래서 "지금 이 열차가 몇 분 늦게 달리는지"(이미 지난 역들의 지연 중 최대)를 함께 보고,
+     * 둘 중 큰 값을 타는 역의 예상 지연으로 쓴다. (네이버 목록의 '예상 지연'과 비슷)
+     */
+    fun readingFrom(result: LookupResult, dep: String, arr: String, date: LocalDate, now: LocalDateTime): Reading =
+        when (result) {
+            is LookupResult.Failure -> Reading(found = false, error = result.message)
+            is LookupResult.NotFound -> Reading(found = false, notFound = true)
+            is LookupResult.Success -> {
+                val t = result.train
+                val depStop = t.stopFor(dep)
+                if (depStop == null) {
+                    Reading(found = false, notFound = true)
+                } else {
+                    val arrStop = t.stopFor(arr)
+                    Reading(
+                        found = true,
+                        cancelled = t.cancelled,
+                        trainName = t.label,
+                        departDelayMin = effectiveDelay(t.stops, depStop, date, now),
+                        arrDelayMin = arrStop?.let { effectiveDelay(t.stops, it, date, now) },
+                        schedDep = depStop.schedDep,
+                        schedArr = arrStop?.schedArr,
+                    )
+                }
             }
         }
+
+    /**
+     * 그 역의 예상 지연(분).
+     *
+     * 역을 순서대로 따라가며 "현재 몇 분 늦게 달리는지(running)"를 누적한다.
+     *  - 각 역의 예상 도착 = 예정 시각 + 지금까지의 지연. 그 시각이 지났으면 그 역을 지난 것으로 보고
+     *    running 을 그 역의 실제 지연으로 갱신한다(지연 후 회복도 그대로 반영).
+     *  - 타는/내리는 역에 도달했으면: 이미 지난 역이면 그 역 실제값, 아직이면 max(그 역 값, 현재 running).
+     * 이렇게 하면 타는 역이 아직 멀어도 '현재 운행 지연'이 떠서, 정시로 잘못 보이지 않는다.
+     */
+    fun effectiveDelay(stops: List<NaverStop>, target: NaverStop, date: LocalDate, now: LocalDateTime): Int {
+        var running = 0
+        for (stop in stops.sortedBy { it.runOrder }) {
+            val t = stop.schedDep ?: stop.schedArr
+            val reached = t != null && !now.isBefore(LocalDateTime.of(date, t).plusMinutes(running.toLong()))
+            if (stop.runOrder == target.runOrder) {
+                return if (reached) stop.delayMin else maxOf(stop.delayMin, running)
+            }
+            if (reached) running = stop.delayMin else return maxOf(target.delayMin, running)
+        }
+        return target.delayMin
     }
 
     /** 조회 결과 하나를 상태에 반영하고, 필요하면 소리 알림 이벤트를 만든다. */
@@ -240,7 +268,7 @@ object Monitor {
             } catch (e: Exception) {
                 LookupResult.Failure("조회 중 오류: ${e.message ?: e.javaClass.simpleName}")
             }
-            val reading = readingFrom(result, occ.train.depStation, occ.train.arrStation)
+            val reading = readingFrom(result, occ.train.depStation, occ.train.arrStation, occ.date, now)
             val (s, alert) = apply(base, reading, now, settings)
             updated += s
             if (alert != null) alerts += alert
