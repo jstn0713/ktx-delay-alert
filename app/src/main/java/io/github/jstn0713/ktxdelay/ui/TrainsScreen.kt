@@ -61,12 +61,7 @@ import io.github.jstn0713.ktxdelay.core.DAY_NAMES
 import io.github.jstn0713.ktxdelay.core.LookupResult
 import io.github.jstn0713.ktxdelay.core.Monitor
 import io.github.jstn0713.ktxdelay.core.NaverClient
-import io.github.jstn0713.ktxdelay.core.RouteResult
-import io.github.jstn0713.ktxdelay.core.RouteTrain
 import io.github.jstn0713.ktxdelay.core.Stations
-import androidx.compose.material3.HorizontalDivider
-import androidx.compose.foundation.layout.heightIn
-import java.time.LocalDateTime
 import io.github.jstn0713.ktxdelay.core.Texts
 import io.github.jstn0713.ktxdelay.core.WatchTrain
 import io.github.jstn0713.ktxdelay.core.hm
@@ -161,36 +156,6 @@ fun TrainEditorScreen(initial: WatchTrain, isNew: Boolean, onClose: () -> Unit) 
     var checkResult by remember { mutableStateOf<String?>(null) }
     var checkOk by remember { mutableStateOf(false) }
     var company by remember { mutableStateOf(initial.railwayCompany) }
-
-    var pickOpen by remember { mutableStateOf(false) }
-    var picking by remember { mutableStateOf(false) }
-    var pickList by remember { mutableStateOf<List<RouteTrain>>(emptyList()) }
-    var pickError by remember { mutableStateOf<String?>(null) }
-
-    val depStation = Stations.find(dep)
-    val arrStation = Stations.find(arr)
-
-    fun runPick(fromTime: LocalTime, append: Boolean) {
-        val d = depStation ?: return
-        val a = arrStation ?: return
-        picking = true
-        pickError = null
-        scope.launch {
-            val today = nowKst().toLocalDate()
-            val date = if (days.isEmpty()) today
-            else (0..7).map { today.plusDays(it.toLong()) }.firstOrNull { it.dayOfWeek.value in days } ?: today
-            val res = withContext(Dispatchers.IO) { NaverClient().searchRoute(d, a, LocalDateTime.of(date, fromTime)) }
-            when (res) {
-                is RouteResult.Success -> {
-                    val merged = if (append) (pickList + res.trains).distinctBy { it.trainNo } else res.trains
-                    pickList = merged.sortedBy { it.depTime }
-                    if (merged.isEmpty()) pickError = "이 시간대에 조회된 KTX가 없어요."
-                }
-                is RouteResult.Failure -> pickError = res.message
-            }
-            picking = false
-        }
-    }
 
     fun checkDate(): LocalDate {
         val today = nowKst().toLocalDate()
@@ -329,43 +294,25 @@ fun TrainEditorScreen(initial: WatchTrain, isNew: Boolean, onClose: () -> Unit) 
             }
             StationField("내리는 역", arr) { arr = it; checkOk = false }
 
-            Text("③ 열차", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
+            Text("③ 열차 번호", style = MaterialTheme.typography.titleSmall, fontWeight = FontWeight.Bold)
             Text(
-                "요일·구간을 넣고 '열차 고르기'를 누르면 그 시간대 KTX 목록이 떠요. " +
-                    "눌러서 고르면 번호·시각이 자동으로 채워져요.",
+                "KTX 번호를 넣고 '번호 확인'을 누르면 네이버에서 조회해 출발·도착 시각을 자동으로 채워줘요. " +
+                    "번호를 모르면 코레일+ 앱이나 네이버 지도에서 그 열차 번호를 확인하세요.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,
             )
-            Button(
-                enabled = depStation != null && arrStation != null && !picking,
-                onClick = {
-                    pickOpen = true
-                    pickList = emptyList()
-                    runPick(parseHm(timeText) ?: nowKst().toLocalTime(), append = false)
-                },
-                modifier = Modifier.fillMaxWidth(),
-            ) {
-                Icon(Icons.Filled.Search, contentDescription = null)
-                Text("  열차 고르기")
-            }
-            if (depStation == null || arrStation == null) {
-                Text(
-                    "※ 타는 역·내리는 역이 목록에 있어야 '열차 고르기'가 돼요. 없으면 아래에 번호를 직접 넣으세요.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant,
-                )
-            }
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
                 OutlinedTextField(
                     value = trainNo,
                     onValueChange = { trainNo = it.filter { c -> c.isDigit() }; checkOk = false },
-                    label = { Text("열차 번호 직접 입력 (예: 352)") },
+                    label = { Text("열차 번호 (예: 352)") },
                     singleLine = true,
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
                     modifier = Modifier.weight(1f),
                 )
-                OutlinedButton(enabled = !checking, onClick = { verifyNumber() }) {
-                    Text("번호 확인")
+                Button(enabled = !checking, onClick = { verifyNumber() }) {
+                    Icon(Icons.Filled.Search, contentDescription = null)
+                    Text("  번호 확인")
                 }
             }
             if (checking) CircularProgressIndicator(Modifier.size(24.dp))
@@ -403,51 +350,6 @@ fun TrainEditorScreen(initial: WatchTrain, isNew: Boolean, onClose: () -> Unit) 
             Button(onClick = { save() }, modifier = Modifier.fillMaxWidth()) { Text("저장") }
             Spacer(Modifier.size(40.dp))
         }
-    }
-
-    if (pickOpen) {
-        AlertDialog(
-            onDismissRequest = { pickOpen = false },
-            title = { Text("열차 고르기 · $dep → $arr") },
-            text = {
-                Column(Modifier.heightIn(max = 460.dp).verticalScroll(rememberScrollState())) {
-                    pickError?.let { Text(it, color = MaterialTheme.colorScheme.error) }
-                    pickList.forEach { t ->
-                        Column(
-                            Modifier.fillMaxWidth().clickable {
-                                trainNo = t.displayNo
-                                trainName = t.trainName
-                                timeText = t.depTime.hm()
-                                arrTime = t.arrTime
-                                company = t.company
-                                checkOk = true
-                                checkResult = "선택됨: ${t.trainName} ${t.displayNo} · ${t.depTime.hm()} 출발 → ${t.arrTime.hm()} 도착"
-                                pickOpen = false
-                            }.padding(vertical = 10.dp),
-                        ) {
-                            Text(
-                                "${t.depTime.hm()} → ${t.arrTime.hm()}",
-                                fontWeight = FontWeight.Bold,
-                                style = MaterialTheme.typography.titleMedium,
-                            )
-                            Text("${t.trainName} ${t.displayNo}", style = MaterialTheme.typography.bodySmall)
-                        }
-                        HorizontalDivider()
-                    }
-                    if (picking) CircularProgressIndicator(Modifier.padding(12.dp).size(28.dp))
-                }
-            },
-            confirmButton = {
-                TextButton(
-                    enabled = !picking && pickList.isNotEmpty(),
-                    onClick = {
-                        val last = pickList.maxByOrNull { it.depTime }?.depTime ?: return@TextButton
-                        runPick(last.plusMinutes(1), append = true)
-                    },
-                ) { Text("다음 시간대 더 보기") }
-            },
-            dismissButton = { TextButton(onClick = { pickOpen = false }) { Text("닫기") } },
-        )
     }
 
     if (confirmDelete) {
