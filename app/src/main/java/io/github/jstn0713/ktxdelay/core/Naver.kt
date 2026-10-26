@@ -4,7 +4,9 @@ import org.json.JSONObject
 import java.io.IOException
 import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLEncoder
 import java.time.LocalDate
+import java.time.LocalDateTime
 import java.time.LocalTime
 import java.time.format.DateTimeFormatter
 
@@ -150,6 +152,94 @@ object NaverParser {
     }
 }
 
+// ---- 노선 열차 목록 (네이버 길찾기 transit) ----
+
+/** 노선 조회로 찾은 열차 1대 */
+data class RouteTrain(
+    val trainNo: String,
+    val displayNo: String,
+    val trainName: String,
+    val company: String,
+    val depTime: LocalTime,
+    val arrTime: LocalTime,
+    val depStation: String,
+    val arrStation: String,
+)
+
+sealed class RouteResult {
+    data class Success(val trains: List<RouteTrain>) : RouteResult()
+    data class Failure(val message: String, val detail: String? = null) : RouteResult()
+}
+
+private fun parseOffsetTime(s: String?): LocalTime? {
+    if (s.isNullOrBlank()) return null
+    return try {
+        java.time.OffsetDateTime.parse(s).toLocalTime()
+    } catch (e: Exception) {
+        null
+    }
+}
+
+object NaverRouteParser {
+    fun parse(json: String): RouteResult {
+        val root = try {
+            JSONObject(json)
+        } catch (e: Exception) {
+            val snippet = json.take(300)
+            return if (snippet.contains("<html", true) || snippet.contains("<!doctype", true)) {
+                RouteResult.Failure("네이버가 데이터 대신 페이지를 보냈어요 (차단/변경 가능성)", snippet)
+            } else {
+                RouteResult.Failure("응답을 읽을 수 없어요 (형식 오류)", snippet)
+            }
+        }
+        val paths = root.optJSONArray("paths")
+            ?: return RouteResult.Failure(root.optString("message").ifBlank { "열차 목록을 받지 못했어요" }, json.take(300))
+
+        val trains = LinkedHashMap<String, RouteTrain>() // 번호별 중복 제거
+        for (i in 0 until paths.length()) {
+            val path = paths.optJSONObject(i) ?: continue
+            if (path.optString("type") != "INTERCITY") continue
+            val legs = path.optJSONArray("legs") ?: continue
+            for (li in 0 until legs.length()) {
+                val steps = legs.optJSONObject(li)?.optJSONArray("steps") ?: continue
+                for (si in 0 until steps.length()) {
+                    val step = steps.optJSONObject(si) ?: continue
+                    if (step.optString("type") != "TRAIN") continue
+                    val route = step.optJSONArray("routes")?.optJSONObject(0) ?: continue
+                    val trip = route.optJSONObject("tripInfo") ?: continue
+                    val className = trip.optString("className")
+                    if (!className.contains("KTX")) continue // KTX만
+                    val no = trip.optString("displayVehicleNo").ifBlank { trip.optString("vehicleNo") }
+                    if (no.isBlank()) continue
+                    val stopsArr = step.optJSONArray("stops")
+                    val first = stopsArr?.optJSONObject(0)
+                    val last = stopsArr?.optJSONObject(stopsArr.length() - 1)
+                    val depTime = parseOffsetTime(first?.optString("departureTime"))
+                        ?: parseOffsetTime(step.optString("departureTime")) ?: continue
+                    val arrTime = parseOffsetTime(last?.optString("arrivalTime"))
+                        ?: parseOffsetTime(step.optString("arrivalTime")) ?: continue
+                    val typeName = route.optJSONObject("type")?.optString("name").orEmpty()
+                    val company = if (className.contains("SRT", true)) "SRT" else "KORAIL"
+                    trains.putIfAbsent(
+                        no,
+                        RouteTrain(
+                            trainNo = no.padStart(5, '0'),
+                            displayNo = no.trimStart('0').ifBlank { no },
+                            trainName = typeName.ifBlank { className },
+                            company = company,
+                            depTime = depTime,
+                            arrTime = arrTime,
+                            depStation = first?.optString("name").orEmpty(),
+                            arrStation = last?.optString("name").orEmpty(),
+                        ),
+                    )
+                }
+            }
+        }
+        return RouteResult.Success(trains.values.sortedBy { it.depTime })
+    }
+}
+
 class NaverClient(
     private val userAgent: String =
         "Mozilla/5.0 (Linux; Android 14; SM-F741N) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Mobile Safari/537.36",
@@ -243,8 +333,40 @@ class NaverClient(
         }
     }
 
+    /** 노선(출발역→도착역)의 그 시간대 KTX 목록을 네이버 길찾기로 가져온다. */
+    fun searchRoute(dep: Station, arr: Station, dateTime: LocalDateTime): RouteResult {
+        if (cookies.isEmpty()) warmUp()
+        val iso = dateTime.format(DateTimeFormatter.ofPattern("yyyy-MM-dd'T'HH:mm:ss")) + "+09:00"
+        val url = "$TRANSIT_URL?start=${dep.lng},${dep.lat}&goal=${arr.lng},${arr.lat}" +
+            "&mode=TIME&departureTime=${URLEncoder.encode(iso, "UTF-8")}"
+        return try {
+            val conn = (URL(url).openConnection() as HttpURLConnection).apply {
+                requestMethod = "GET"
+                connectTimeout = 12_000
+                readTimeout = 20_000
+                setRequestProperty("User-Agent", userAgent)
+                setRequestProperty("Accept", "application/json, text/plain, */*")
+                setRequestProperty("Accept-Language", "ko-KR,ko;q=0.9")
+                setRequestProperty("Referer", "https://map.naver.com/")
+                if (cookies.isNotEmpty()) setRequestProperty("Cookie", cookieHeader())
+            }
+            val code = conn.responseCode
+            storeCookies(conn)
+            val stream = if (code in 200..299) conn.inputStream else conn.errorStream
+            val text = stream?.bufferedReader(Charsets.UTF_8)?.use { it.readText() }.orEmpty()
+            conn.disconnect()
+            if (code !in 200..299) RouteResult.Failure("네이버 응답 오류 (HTTP $code)", text.take(300))
+            else NaverRouteParser.parse(text)
+        } catch (e: IOException) {
+            RouteResult.Failure("인터넷 연결 또는 네이버 서버 문제: ${e.message ?: e.javaClass.simpleName}")
+        } catch (e: Exception) {
+            RouteResult.Failure("조회 중 오류: ${e.message ?: e.javaClass.simpleName}")
+        }
+    }
+
     companion object {
         const val ORIGIN = "https://pt.map.naver.com"
+        const val TRANSIT_URL = "https://map.naver.com/p/api/directions/transit"
         const val TRAIN_TIME_URL = "$ORIGIN/end-train/api/train-time"
         const val BRIDGE_URL =
             "$ORIGIN/end-train/bridges/train/web/home?menu=schedule&lang=ko&svcName=map_pcv5"
