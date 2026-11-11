@@ -30,6 +30,7 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.vector.ImageVector
+import androidx.compose.ui.unit.dp
 import androidx.lifecycle.lifecycleScope
 import io.github.jstn0713.ktxdelay.core.WatchTrain
 import io.github.jstn0713.ktxdelay.data.AppRepo
@@ -91,6 +92,11 @@ fun AppRoot() {
         editing = newTrainTemplate()
     }
 
+    var introSeen by remember { mutableStateOf(AppRepo.introSeen()) }
+    if (!introSeen) {
+        IntroDialog(onAccept = { AppRepo.setIntroSeen(); introSeen = true })
+    }
+
     val current = editing
     if (current != null) {
         BackHandler { editing = null }
@@ -126,4 +132,32 @@ fun AppRoot() {
             }
         }
     }
+}
+
+@Composable
+private fun IntroDialog(onAccept: () -> Unit) {
+    androidx.compose.material3.AlertDialog(
+        onDismissRequest = {},
+        title = { Text("먼저 읽어주세요") },
+        text = {
+            androidx.compose.foundation.layout.Column(
+                verticalArrangement = androidx.compose.foundation.layout.Arrangement.spacedBy(10.dp),
+            ) {
+                Text("이 앱은 코레일·네이버의 공식 앱이 아니라, 개인이 만든 도구예요.")
+                Text(
+                    "코레일이 지연 정보를 받아올 공개 수단을 주지 않고 자동 접근도 막아서, " +
+                        "대신 네이버 지도의 기차 정보를 받아 보여줍니다. 그 과정에서 실제와 차이가 있을 수 있어요. " +
+                        "실제 운행은 코레일·네이버 공식 안내를 우선하세요.",
+                )
+                Text(
+                    "개인적으로만 사용하고, 다른 사람에게 퍼뜨리지 마세요. " +
+                        "널리 퍼지면 막혀서 모두 못 쓰게 될 수 있어요.",
+                    fontWeight = androidx.compose.ui.text.font.FontWeight.Bold,
+                )
+            }
+        },
+        confirmButton = {
+            androidx.compose.material3.TextButton(onClick = onAccept) { Text("이해했어요") }
+        },
+    )
 }

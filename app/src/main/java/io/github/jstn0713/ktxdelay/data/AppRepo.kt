@@ -22,6 +22,7 @@ object AppRepo {
     private const val K_SKIP = "skipDate"
     private const val K_FINISHED = "finishedKeys"
     private const val K_UPDATE_CHECKED = "updateCheckedAt"
+    private const val K_INTRO_SEEN = "introSeenV1"
     private const val MAX_HISTORY = 1000
 
     private lateinit var prefs: SharedPreferences
@@ -129,4 +130,8 @@ object AppRepo {
     var updateCheckedAt: Long
         get() = prefs.getLong(K_UPDATE_CHECKED, 0L)
         set(v) = prefs.edit().putLong(K_UPDATE_CHECKED, v).apply()
+
+    /** 첫 실행 안내를 봤는지 */
+    fun introSeen(): Boolean = prefs.getBoolean(K_INTRO_SEEN, false)
+    fun setIntroSeen() = prefs.edit().putBoolean(K_INTRO_SEEN, true).apply()
 }
